@@ -1,0 +1,240 @@
+{
+  "window_geometry": "1919x1009+-6+0",
+  "window_state": "normal",
+  "last_tab": 1,
+  "auto_modelo": "#1Aurora",
+  "flow_modelo": "exemplo2",
+  "flow_prompt_ativo": "Padrão",
+  "flow_prompt_edit": "Padrão",
+  "flow_delay": "15",
+  "flow_prompt_delay": "10",
+  "flow_cycle_interval": "40",
+  "flow_sends_per_cycle": "1",
+  "flow_send_interval": "15",
+  "flow_profiles": [
+    {
+      "id": "perfil_1",
+      "name": "Perfil 1",
+      "port": "9222",
+      "url": "https://labs.google/fx/pt/tools/flow/project/8d879eae-565f-4123-b604-1d963adf79c9",
+      "session": "C:\\Temp\\chrome_motionhub",
+      "active": true
+    },
+    {
+      "id": "perfil_2",
+      "name": "Perfil 2",
+      "port": "9223",
+      "url": "https://labs.google/fx/pt/tools/flow/project/22ff7413-268f-443f-8ccc-c766205b1a55",
+      "session": "C:\\Temp\\chrome_motionhub_2",
+      "active": true
+    },
+    {
+      "id": "perfil_4",
+      "name": "Perfil 4",
+      "port": "9225",
+      "url": "https://labs.google/fx/pt/tools/flow/project/ee549ca6-36d1-42cd-9562-005e535a3f47",
+      "session": "C:\\Temp\\chrome_motionhub_4",
+      "active": true
+    },
+    {
+      "id": "perfil_5",
+      "name": "Perfil 5",
+      "port": "9226",
+      "url": "https://labs.google/fx/pt/tools/flow/project/f2af4e7a-cf1c-4ea1-bdb5-649ced0f301d",
+      "session": "C:\\Temp\\chrome_motionhub_5",
+      "active": true
+    },
+    {
+      "id": "perfil_6",
+      "name": "Perfil 6",
+      "port": "9227",
+      "url": "https://labs.google/fx/pt/tools/flow/project/13b2cebf-6ed1-4d8a-ac8b-877db5a1cbe2",
+      "session": "C:\\Temp\\chrome_motionhub_6",
+      "active": true
+    },
+    {
+      "id": "perfil_3",
+      "name": "Perfil 3",
+      "port": "9224",
+      "url": "https://labs.google/fx/pt/tools/flow/project/8b6f133f-6a64-47a4-9d57-be5c81d78d2a",
+      "session": "C:\\Temp\\chrome_motionhub_3",
+      "active": true
+    },
+    {
+      "id": "perfil_7",
+      "name": "Perfil 7",
+      "port": "9228",
+      "url": "https://labs.google/fx/pt/tools/flow/project/190ffcfc-7547-4288-9507-e6f47628c33f",
+      "session": "C:\\Temp\\chrome_motionhub_7",
+      "active": true
+    },
+    {
+      "id": "perfil_8",
+      "name": "Perfil 8",
+      "port": "9229",
+      "url": "https://labs.google/fx/pt/tools/flow/project/23b2762f-eb20-4327-8dac-082dae02bf92",
+      "session": "C:\\Temp\\chrome_motionhub_8",
+      "active": true
+    },
+    {
+      "id": "perfil_9",
+      "name": "Perfil 9",
+      "port": "9230",
+      "url": "https://labs.google/fx/pt/tools/flow/project/5ba328ef-12f4-4f1b-b7fc-bb7da7c3ceb0",
+      "session": "C:\\Temp\\chrome_motionhub_9",
+      "active": true
+    },
+    {
+      "id": "perfil_10",
+      "name": "Perfil 10",
+      "port": "9231",
+      "url": "https://labs.google/fx/pt/tools/flow/project/190ffcfc-7547-4288-9507-e6f47628c33f",
+      "session": "C:\\Temp\\chrome_motionhub_10",
+      "active": true
+    }
+  ],
+  "auto_modo": "modelo",
+  "auto_pasta_refs": "C:/Users/cieiw/Documents/#Work/automacao/Swap/#videosog",
+  "motion_media_delay": "20",
+  "motion_generation_minutes": "30",
+  "motion_screen_positions": {
+    "video": [
+      1110,
+      738
+    ],
+    "imagem": [
+      695,
+      726
+    ],
+    "run": [
+      1393,
+      116
+    ]
+  },
+  "motion_profiles": [
+    {
+      "id": "motion_1",
+      "name": "Perfil 1",
+      "port": "9223",
+      "session": "C:\\Temp\\chrome_motion_1",
+      "active": true
+    },
+    {
+      "id": "motion_2",
+      "name": "Perfil 2",
+      "port": "9224",
+      "session": "C:\\Temp\\chrome_motion_2",
+      "active": true
+    },
+    {
+      "id": "motion_3",
+      "name": "Perfil 3",
+      "port": "9225",
+      "session": "C:\\Temp\\chrome_motion_3",
+      "active": true
+    },
+    {
+      "id": "motion_4",
+      "name": "Perfil 4",
+      "port": "9226",
+      "session": "C:\\Temp\\chrome_motion_4",
+      "active": true
+    },
+    {
+      "id": "motion_5",
+      "name": "Perfil 5",
+      "port": "9227",
+      "session": "C:\\Temp\\chrome_motion_5",
+      "active": true
+    },
+    {
+      "id": "motion_6",
+      "name": "Perfil 6",
+      "port": "9228",
+      "session": "C:\\Temp\\chrome_motion_6",
+      "active": true
+    },
+    {
+      "id": "motion_7",
+      "name": "Perfil 7",
+      "port": "9229",
+      "session": "C:\\Temp\\chrome_motion_7",
+      "active": true
+    },
+    {
+      "id": "motion_8",
+      "name": "Perfil 8",
+      "port": "9230",
+      "session": "C:\\Temp\\chrome_motion_8",
+      "active": true
+    },
+    {
+      "id": "motion_9",
+      "name": "Perfil 9",
+      "port": "9231",
+      "session": "C:\\Temp\\chrome_motion_9",
+      "active": true
+    },
+    {
+      "id": "motion_10",
+      "name": "Perfil 10",
+      "port": "9232",
+      "session": "C:\\Temp\\chrome_motion_10",
+      "active": true
+    },
+    {
+      "id": "motion_11",
+      "name": "Perfil 11",
+      "port": "9233",
+      "session": "C:\\Temp\\chrome_motion_11",
+      "active": true
+    },
+    {
+      "id": "motion_12",
+      "name": "Perfil 12",
+      "port": "9234",
+      "session": "C:\\Temp\\chrome_motion_12",
+      "active": true
+    },
+    {
+      "id": "motion_13",
+      "name": "Perfil 13",
+      "port": "9235",
+      "session": "C:\\Temp\\chrome_motion_13",
+      "active": true
+    },
+    {
+      "id": "motion_14",
+      "name": "Perfil 14",
+      "port": "9236",
+      "session": "C:\\Temp\\chrome_motion_14",
+      "active": true
+    },
+    {
+      "id": "motion_15",
+      "name": "Perfil 15",
+      "port": "9237",
+      "session": "C:\\Temp\\chrome_motion_15",
+      "active": true
+    }
+  ],
+  "motion_profile_dir": "",
+  "motion_aguardar_abrir": "70",
+  "fotos_prompt_edit": "Padrão",
+  "fotos_pasta": "C:/Users/cieiw/Documents/#Work/automacao/Swap/fotos",
+  "motion_max_paralelo": "8",
+  "motion_remover_marca_dagua": true,
+  "fotos_sends_per_cycle": "1",
+  "fotos_delay": "15",
+  "fotos_cycle_interval": "40",
+  "motion_creditos_last_opened_ts": 1782538622.6487005,
+  "fotos_max_parallel_profiles": "1",
+  "flow_max_parallel_profiles": "1",
+  "seletores": {
+    "uploads_btn": "#__next > div.sc-c7ee1759-1.jhwuTJ > div.sc-682f0b3f-0.iPxPxr > div.sc-265fb5e0-1.MnZmZ > div.sc-3ce961f7-1.gBAzKE:nth-child(5) > button.sc-e8425ea6-0.hOBPaw.sc-d3791a4f-0.sc-d3791a4f-5",
+    "upload_container": "#__next > div:nth-child(1) > div:nth-child(4) > div:nth-child(2) > div > div > div > div:nth-child(2) > div:nth-child(1) > div",
+    "upload_img3": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=6435d767-da00-4150-ae4c-0ec2b75b539a",
+    "upload_img2": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=e01c984c-1c82-4735-8da3-9a7cf4a02f1f",
+    "upload_img1": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=38565c92-7c95-4444-a326-0361a71d83f7"
+  }
+}

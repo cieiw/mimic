@@ -1,0 +1,7 @@
+2026/06/07-17:57:22.099 4368 Reusing MANIFEST C:\Users\cieiw\Documents\#Work\automacao\motionRunningHub\#\chrome_session\Default\IndexedDB\https_labs.google_0.indexeddb.leveldb/MANIFEST-000001
+2026/06/07-17:57:22.099 4368 Recovering log #4
+2026/06/07-17:57:22.099 4368 Reusing old log C:\Users\cieiw\Documents\#Work\automacao\motionRunningHub\#\chrome_session\Default\IndexedDB\https_labs.google_0.indexeddb.leveldb/000004.log 
+2026/06/07-17:57:24.088 26a0 Level-0 table #8: started
+2026/06/07-17:57:24.752 26a0 Level-0 table #8: 8031 bytes OK
+2026/06/07-17:57:24.851 26a0 Delete type=0 #4
+2026/06/07-17:57:24.851 4368 Manual compaction at level-0 from '\x00\x05\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x06\x00\x00\x00' @ 0 : 0; will stop at (end)
