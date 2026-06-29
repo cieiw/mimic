@@ -60,6 +60,29 @@ except ImportError:
     PLAYWRIGHT_AVAILABLE = False
 
 APP_NAME = "Mimic"
+
+# ── Caminhos fixos para ferramentas externas ──────────────────────────────────
+_FFMPEG_DIR  = r"C:\Program Files\• ffmpeg"
+FFMPEG_BIN   = os.path.join(_FFMPEG_DIR, "bin", "ffmpeg.exe")
+FFPROBE_BIN  = os.path.join(_FFMPEG_DIR, "bin", "ffprobe.exe")
+FFPLAY_BIN   = os.path.join(_FFMPEG_DIR, "bin", "ffplay.exe")
+
+def _resolve_ffmpeg():
+    """Retorna o caminho do ffmpeg: primeiro tenta o path fixo, depois o PATH do sistema."""
+    if os.path.isfile(FFMPEG_BIN):
+        return FFMPEG_BIN
+    return shutil.which("ffmpeg")
+
+def _resolve_ffprobe():
+    if os.path.isfile(FFPROBE_BIN):
+        return FFPROBE_BIN
+    return shutil.which("ffprobe")
+
+def _resolve_ffplay():
+    if os.path.isfile(FFPLAY_BIN):
+        return FFPLAY_BIN
+    return shutil.which("ffplay")
+# ─────────────────────────────────────────────────────────────────────────────
 SWAP_ICON_PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABccqhmAABChUlEQVR4nO2dd7wU1fn/32dmZ/veyq1UqQJSxIYV"
     "UCyg2LAroiBfjdiNftWfX2P7msRvjDExiZpmS4wxRk2MvYLdiA1EihQB6eW2rTNzfn/Mzt5LuQW5e3f27rx9rcDe"
@@ -360,19 +383,14 @@ FLOW_ALL_UPLOAD_IMGS_SEL = (
 )
 
 # ─── CONFIGURAÇÕES ────────────────────────────────────────────────────────────
-BASE_DIR   = (
-    Path(sys.executable).resolve().parent
-    if getattr(sys, "frozen", False)
-    else Path(__file__).resolve().parent
-)
+BASE_DIR   = Path(__file__).resolve().parent
 ASSETS_DIR = BASE_DIR / "assets"
 MIMIC_LOGO_FILE = ASSETS_DIR / "logo.png"
-MIMIC_ICON_FILE = ASSETS_DIR / "logo.ico"
 CONFIG_FILE = ASSETS_DIR / "config.json"
 MODELS_FILE = ASSETS_DIR / "modelos.json"
 PROMPTS_FILE = ASSETS_DIR / "prompts.json"
-VIDEOS_DIR  = BASE_DIR / "• VídeosOg"
-PHOTOS_DIR  = ASSETS_DIR / "fotos_modelos"
+VIDEOS_DIR  = BASE_DIR / "•• VídeosOg"
+FOTOS_OG_DIR = BASE_DIR / "•• FotosOg"
 WORK_DIR    = ASSETS_DIR / "work"          # pastas geradas ficam aqui
 READY_DIR   = BASE_DIR / "• Pronto"
 MOTION_DIR  = ASSETS_DIR / "• Motion"
@@ -733,8 +751,8 @@ class MotionHubApp(tk.Tk):
 
         BASE_DIR.mkdir(parents=True, exist_ok=True)
         ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-        PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
         VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+        FOTOS_OG_DIR.mkdir(parents=True, exist_ok=True)
         WORK_DIR.mkdir(parents=True, exist_ok=True)
         READY_DIR.mkdir(parents=True, exist_ok=True)
         MOTION_DIR.mkdir(parents=True, exist_ok=True)
@@ -781,17 +799,6 @@ class MotionHubApp(tk.Tk):
     def _aplicar_icone_app(self):
         """Aplica a logo do Mimic na janela."""
         try:
-            if sys.platform == "win32":
-                try:
-                    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Mimic.App")
-                except Exception:
-                    pass
-                if MIMIC_ICON_FILE.exists():
-                    try:
-                        self.iconbitmap(default=str(MIMIC_ICON_FILE))
-                    except Exception:
-                        pass
-
             if MIMIC_LOGO_FILE.exists():
                 if PIL_AVAILABLE:
                     icon = Image.open(MIMIC_LOGO_FILE).convert("RGBA")
@@ -1271,8 +1278,8 @@ class MotionHubApp(tk.Tk):
         caminho = Path(caminho)
         if not caminho.exists() or not caminho.is_file():
             return caminho
-        ffmpeg = shutil.which("ffmpeg")
-        ffprobe = shutil.which("ffprobe")
+        ffmpeg = _resolve_ffmpeg()
+        ffprobe = _resolve_ffprobe()
         if not ffmpeg or not ffprobe:
             self._log("Motion: ffmpeg/ffprobe nao encontrados; video mantido sem conversao 4K.")
             return caminho
@@ -1585,7 +1592,7 @@ class MotionHubApp(tk.Tk):
         # --- Vídeos ---
         vid_hdr = tk.Frame(col_a_right, bg=C["BG2"])
         vid_hdr.pack(fill="x", pady=(0, 2))
-        tk.Label(vid_hdr, text="Vídeos em • VídeosOg", bg=C["BG2"], fg=C["FG2"],
+        tk.Label(vid_hdr, text="Vídeos em •• VídeosOg", bg=C["BG2"], fg=C["FG2"],
                  font=("Segoe UI Semibold", 9)).pack(side="left")
         vid_btns = tk.Frame(col_a_right, bg=C["BG2"])
         vid_btns.pack(fill="x", pady=(0, 6))
@@ -1704,6 +1711,7 @@ class MotionHubApp(tk.Tk):
         tf.pack(fill="x", pady=(0, 6))
         timer_defs = [
             ("Perfis simultâneos:", "flow_max_parallel_profiles", "0",  "opt_max_parallel_profiles", "(0 = todos)"),
+            ("Aguardar navegador (s):",   "flow_aguardar_abrir",   "10", "opt_aguardar_abrir",        "antes de conectar"),
             ("Aguardar imagens (s):",     "flow_delay",            "10", "opt_delay",                 "após imagens"),
             ("Intervalo envios (s):",     "flow_send_interval",    "10", "opt_send_interval",         "entre pastas"),
             ("Intervalo ciclos (s):",     "flow_cycle_interval",   "60", "opt_cycle_interval",        "pausa/ciclo"),
@@ -1870,7 +1878,7 @@ class MotionHubApp(tk.Tk):
                 if f.suffix.lower() in exts:
                     self.videos_listbox.insert("end", f"  {f.name}")
         else:
-            self.videos_listbox.insert("end", "  [Pasta • VídeosOg não encontrada]")
+            self.videos_listbox.insert("end", "  [Pasta •• VídeosOg não encontrada]")
 
     def _criar_frames_thread(self):
         threading.Thread(target=self._criar_frames, daemon=True).start()
@@ -1959,15 +1967,50 @@ class MotionHubApp(tk.Tk):
                         self._log(f"  ~ Vídeo já existe")
 
                     frame_path = pasta / "frameog.jpg"
-                    cap = cv2.VideoCapture(str(video_path))
-                    ret, frame = cap.read()
-                    cap.release()
-                    if ret:
-                        cv2.imwrite(str(frame_path), frame)
-                        self._log(f"  ✓ frameog.jpg extraído")
-                        criados += 1
-                    else:
-                        self._log(f"  ✗ Falha ao ler frame: {video_path.name}")
+                    _extraido = False
+                    # Tentativa 1: OpenCV com imencode (suporta paths com caracteres especiais)
+                    if CV2_AVAILABLE:
+                        cap = cv2.VideoCapture(str(video_path))
+                        ret, frame = cap.read()
+                        cap.release()
+                        if ret:
+                            try:
+                                ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                                if ok:
+                                    frame_path.write_bytes(buf.tobytes())
+                                    self._log(f"  ✓ frameog.jpg extraído (OpenCV)")
+                                    criados += 1
+                                    _extraido = True
+                                else:
+                                    self._log(f"  ⚠ OpenCV imencode falhou; tentando ffmpeg...")
+                            except Exception as _ocve:
+                                self._log(f"  ⚠ OpenCV erro ao salvar ({_ocve}); tentando ffmpeg...")
+                        else:
+                            self._log(f"  ⚠ OpenCV falhou ao ler frame; tentando ffmpeg...")
+                    # Tentativa 2: ffmpeg (fallback - nao tem problema com paths especiais)
+                    if not _extraido:
+                        _ff = _resolve_ffmpeg()
+                        if _ff:
+                            try:
+                                subprocess.run(
+                                    [_ff, "-y", "-hide_banner", "-loglevel", "error",
+                                     "-i", str(video_path),
+                                     "-frames:v", "1", "-q:v", "2",
+                                     str(frame_path)],
+                                    check=True, capture_output=True
+                                )
+                                if frame_path.exists() and frame_path.stat().st_size > 0:
+                                    self._log(f"  ✓ frameog.jpg extraído (ffmpeg)")
+                                    criados += 1
+                                    _extraido = True
+                                else:
+                                    self._log(f"  ✗ ffmpeg executou mas nao gerou arquivo")
+                            except Exception as _ffe:
+                                self._log(f"  ✗ ffmpeg falhou: {_ffe}")
+                        else:
+                            self._log(f"  ✗ ffmpeg nao encontrado em '{FFMPEG_BIN}' nem no PATH")
+                    if not _extraido:
+                        self._log(f"  ✗ Falha ao extrair frame: {video_path.name}")
                         erros.append(video_path.name)
                 except Exception as e:
                     self._log(f"  ✗ Erro: {e}")
@@ -2479,7 +2522,16 @@ class MotionHubApp(tk.Tk):
             time.sleep(intervalo)
         return self._flow_porta_respondendo(porta, timeout=1.5)
 
-    def _flow_garantir_perfil_aberto(self, perfil):
+    def _flow_aguardar_abrir_segundos(self, cfg_key="flow_aguardar_abrir", attr="opt_aguardar_abrir"):
+        """Retorna o tempo de espera configurado para o navegador abrir (Flow/Fotos)."""
+        try:
+            var = getattr(self, attr, None)
+            val = var.get() if var else self.config.get(cfg_key, "10")
+            return max(1, int(float(val)))
+        except (ValueError, AttributeError):
+            return 10
+
+    def _flow_garantir_perfil_aberto(self, perfil, cfg_key="flow_aguardar_abrir", attr="opt_aguardar_abrir"):
         porta = perfil.get("port")
         if self._flow_porta_respondendo(porta):
             return False
@@ -2488,12 +2540,17 @@ class MotionHubApp(tk.Tk):
             "Abrindo automaticamente..."
         )
         self._flow_abrir_perfil(perfil)
-        espera = 30
+        espera_abrir = self._flow_aguardar_abrir_segundos(cfg_key, attr)
+        self._log(
+            f"[{perfil['name']}] Aguardando {espera_abrir}s para o navegador abrir..."
+        )
+        time.sleep(espera_abrir)
+        espera_porta = 30
         self._log(
             f"[{perfil['name']}] Aguardando o Chrome responder na porta "
-            f"{porta} por ate {espera}s..."
+            f"{porta} por ate {espera_porta}s..."
         )
-        if not self._flow_aguardar_porta(porta, timeout=espera):
+        if not self._flow_aguardar_porta(porta, timeout=espera_porta):
             raise RuntimeError(
                 f"Chrome aberto para '{perfil['name']}', mas a porta {porta} "
                 "nao respondeu. Feche Chromes antigos desse perfil e tente novamente."
@@ -4005,7 +4062,7 @@ class MotionHubApp(tk.Tk):
 
 
     # ══════════════════════════════════════════════════════════════════════════
-    # TAB 4 — FOTOS  (Flow com pasta única — substitui originais)
+    # TAB 4 — FOTOS  (entrada em •• FotosOg, saída em • Pronto)
     # ══════════════════════════════════════════════════════════════════════════
     def _build_tab_fotos(self):
         C = self.colors
@@ -4027,7 +4084,11 @@ class MotionHubApp(tk.Tk):
 
         pasta_row = tk.Frame(pf, bg=C["BG2"])
         pasta_row.pack(fill="x")
-        self.fotos_pasta_var = tk.StringVar(value=self.config.get("fotos_pasta", ""))
+        fotos_pasta_inicial = self.config.get("fotos_pasta", "")
+        if not fotos_pasta_inicial or not Path(fotos_pasta_inicial).is_dir():
+            fotos_pasta_inicial = str(FOTOS_OG_DIR)
+            self.config["fotos_pasta"] = fotos_pasta_inicial
+        self.fotos_pasta_var = tk.StringVar(value=fotos_pasta_inicial)
         ttk.Entry(pasta_row, textvariable=self.fotos_pasta_var).pack(
             side="left", fill="x", expand=True, padx=(0, 6))
         ttk.Button(pasta_row, text="Selecionar",
@@ -4036,8 +4097,8 @@ class MotionHubApp(tk.Tk):
             lambda *a: self.config.update({"fotos_pasta": self.fotos_pasta_var.get()}))
 
         tk.Label(pf, text=(
-            "Cada foto da pasta e enviada individualmente ao Flow.\n"
-            "A imagem gerada é salva como novo arquivo (ex: foto_Modelo.jpg), sem sobrescrever o original."
+            "Cada foto de •• FotosOg é enviada individualmente ao Flow.\n"
+            "A imagem gerada é salva em • Pronto por modelo, sem sobrescrever o original."
         ), bg=C["BG2"], fg=C["FG2"], font=("Segoe UI", 8), justify="left"
         ).pack(anchor="w", pady=(6, 2))
 
@@ -4117,7 +4178,7 @@ class MotionHubApp(tk.Tk):
         pt_scroll.config(command=self.fotos_prompt_text.yview)
 
         # ── Lista de fotos ────────────────────────────────────────────────────
-        lf = ttk.LabelFrame(right_col, text="Fotos na pasta")
+        lf = ttk.LabelFrame(right_col, text="Fotos em •• FotosOg")
         lf.pack(fill="both", expand=True)
 
         ls = ttk.Scrollbar(lf, style="Vertical.TScrollbar")
@@ -4159,6 +4220,8 @@ class MotionHubApp(tk.Tk):
 
         _timer_row(tf, "Perfis simultaneos:",
                    "fotos_max_parallel_profiles", "fotos_max_parallel_profiles", "0", "(0 = todos ativos)")
+        _timer_row(tf, "Aguardar navegador (s):",
+                   "fotos_aguardar_abrir", "fotos_aguardar_abrir", "10", "(antes de conectar)")
         _timer_row(tf, "Aguardar imagens carregarem (s):",
                    "fotos_delay", "fotos_delay", "10", "(apos enviar a foto)")
         _timer_row(tf, "Intervalo entre ciclos (s):",
@@ -4175,6 +4238,8 @@ class MotionHubApp(tk.Tk):
             text="Os perfis ativos são abertos automaticamente; faça login uma vez em cada sessão se necessário.",
             bg=C["BG"], fg=C["WARN"], font=("Segoe UI", 8)
         ).pack(anchor="w", pady=(0, 6))
+        ttk.Button(actions, text="🖼  Criar frames",
+                   command=self._criar_frames_fotos_thread).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Enviar fotos para todos os perfis ativos",
                    style="Accent.TButton",
                    command=self._fotos_enviar_thread).pack(side="left")
@@ -4190,6 +4255,148 @@ class MotionHubApp(tk.Tk):
         if pasta:
             self.fotos_pasta_var.set(pasta)
             self._fotos_atualizar_lista()
+
+    def _criar_frames_fotos_thread(self):
+        threading.Thread(target=self._criar_frames_fotos, daemon=True).start()
+
+    def _criar_frames_fotos(self):
+        """
+        Equivalente ao "Criar Frames" da aba de vídeos, mas para fotos.
+        Para cada foto da pasta configurada:
+          - Cria pasta em assets/work com nome  <modelo>_<nome_foto>  (ou só <nome_foto>)
+          - Copia a foto como frameog.jpg  (com imencode para suportar paths especiais)
+          - Copia a foto também como frameNew (1).jpg  (já marca como "pronto" na Revisão)
+        Ao terminar, abre a aba Revisão com todos os itens gerados.
+        """
+        pasta_str = self.fotos_pasta_var.get().strip()
+        if not pasta_str or not os.path.isdir(pasta_str):
+            self.after(0, lambda: messagebox.showerror(
+                "Erro", "Selecione uma pasta de fotos válida na aba Fotos."))
+            return
+
+        exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+        pasta_src = Path(pasta_str)
+        todas_fotos = sorted(
+            f for f in pasta_src.iterdir()
+            if f.is_file() and f.suffix.lower() in exts
+            and not f.name.endswith(".bak")
+        )
+
+        # Respeita seleção da listbox (se houver)
+        sel = []
+        try:
+            sel = list(self.fotos_listbox.curselection())
+        except Exception:
+            pass
+        fotos_sel = ([todas_fotos[i] for i in sel if i < len(todas_fotos)]
+                     if sel else todas_fotos)
+
+        if not fotos_sel:
+            self.after(0, lambda: messagebox.showwarning(
+                "Aviso", "Nenhuma foto encontrada na pasta configurada."))
+            return
+
+        modelos_sel = self._fotos_modelos_selecionadas()  # [(nome, ref1, ref2), ...]
+
+        # Expande: se houver modelos selecionadas, gera um item por (foto × modelo)
+        if modelos_sel:
+            itens = [(foto, nome_mod) for foto in fotos_sel for nome_mod, _, _ in modelos_sel]
+        else:
+            itens = [(foto, None) for foto in fotos_sel]
+
+        if not itens:
+            self.after(0, lambda: messagebox.showwarning("Aviso", "Nenhum item para processar."))
+            return
+
+        criados = 0
+        erros = []
+        itens_revisao = []
+
+        for pos, (foto_path, nome_mod) in enumerate(itens, start=1):
+            try:
+                # Nome da pasta: "Modelo_nomefoto" ou só "nomefoto"
+                stem = foto_path.stem[:60]
+                if nome_mod:
+                    pasta_nome = f"{nome_mod}_{stem}"
+                else:
+                    pasta_nome = stem
+                # Limpa caracteres inválidos para nome de pasta
+                pasta_nome = re.sub(r'[\/:*?"<>|]', '_', pasta_nome)
+
+                pasta_dest = WORK_DIR / pasta_nome
+                pasta_dest.mkdir(parents=True, exist_ok=True)
+                self._log(f"📁 {pasta_nome}")
+
+                # Lê a foto com Pillow (suporta qualquer path) e salva como frameog.jpg
+                frameog = pasta_dest / "frameog.jpg"
+                frame_new = pasta_dest / f"frameNew (1).jpg"
+                _salvo = False
+
+                if PIL_AVAILABLE:
+                    try:
+                        img = Image.open(foto_path)
+                        img = ImageOps.exif_transpose(img)
+                        if img.mode != "RGB":
+                            img = img.convert("RGB")
+                        img.save(str(frameog), "JPEG", quality=95)
+                        img.save(str(frame_new), "JPEG", quality=95)
+                        self._log(f"  ✓ frameog.jpg + frameNew (1).jpg salvos (Pillow)")
+                        _salvo = True
+                    except Exception as _pile:
+                        self._log(f"  ⚠ Pillow falhou ({_pile}); tentando OpenCV...")
+
+                if not _salvo and CV2_AVAILABLE:
+                    try:
+                        img_cv = cv2.imdecode(
+                            __import__('numpy').frombuffer(foto_path.read_bytes(), __import__('numpy').uint8),
+                            cv2.IMREAD_COLOR
+                        )
+                        if img_cv is not None:
+                            ok, buf = cv2.imencode(".jpg", img_cv, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                            if ok:
+                                data = buf.tobytes()
+                                frameog.write_bytes(data)
+                                frame_new.write_bytes(data)
+                                self._log(f"  ✓ frameog.jpg + frameNew (1).jpg salvos (OpenCV)")
+                                _salvo = True
+                            else:
+                                self._log(f"  ⚠ OpenCV imencode falhou; tentando cópia direta...")
+                    except Exception as _cve:
+                        self._log(f"  ⚠ OpenCV falhou ({_cve}); tentando cópia direta...")
+
+                if not _salvo:
+                    # Último recurso: cópia binária direta
+                    try:
+                        data = foto_path.read_bytes()
+                        frameog.write_bytes(data)
+                        frame_new.write_bytes(data)
+                        self._log(f"  ✓ frameog.jpg + frameNew (1).jpg copiados (binário)")
+                        _salvo = True
+                    except Exception as _ce:
+                        self._log(f"  ✗ Falha ao copiar: {_ce}")
+                        erros.append(foto_path.name)
+                        continue
+
+                criados += 1
+                itens_revisao.append({
+                    "pasta":   pasta_dest,
+                    "arquivo": frame_new,
+                    "pos":     pos,
+                })
+
+            except Exception as e:
+                self._log(f"  ✗ Erro em {foto_path.name}: {e}")
+                erros.append(foto_path.name)
+
+        msg = f"Concluído! {criados} pasta(s) criada(s) em assets/work"
+        if erros:
+            msg += "\n\nErros:\n" + "\n".join(erros)
+        self.after(0, lambda: messagebox.showinfo("Criar Frames (Fotos)", msg))
+        self._log("─" * 50)
+
+        # Abre Revisão com os itens gerados
+        if itens_revisao:
+            self.after(0, lambda itens=itens_revisao: self._abrir_revisao(itens))
 
     def _fotos_atualizar_lista(self):
         self.fotos_listbox.delete(0, "end")
@@ -4525,7 +4732,7 @@ class MotionHubApp(tk.Tk):
 
         try:
             try:
-                self._flow_garantir_perfil_aberto(perfil)
+                self._flow_garantir_perfil_aberto(perfil, cfg_key="fotos_aguardar_abrir", attr="fotos_aguardar_abrir")
             except Exception as exc:
                 raise RuntimeError(
                     f"Nao foi possivel abrir o perfil '{perfil['name']}': "
@@ -4612,7 +4819,7 @@ class MotionHubApp(tk.Tk):
                                 )
                             except Exception:
                                 srcs_anteriores_fotos[foto] = None
-                            await self._selecionar_upload_edicao_async(aba)
+                            await self._selecionar_todos_uploads_para_prompt_async(aba)
                             await self._clicar_criar_flow_async(aba)
                             await self._deletar_ultima_imagem_uploads_flow_async(aba)
                             self._log(f"  [Aba {num}/{total_ok}] \u2713 Criado!")
@@ -4625,16 +4832,16 @@ class MotionHubApp(tk.Tk):
                         for i, (aba, foto, nome_mod) in enumerate(abas_ok)
                     ])
 
-                    # FASE 4 download e substituicao
+                    # FASE 4 download e salvamento em • Pronto
                     if abas_ok:
                         self._log(f"\n  \u23f3 Ciclo {ciclo_num}: aguardando {cycle_interval:.0f}s para gerar...")
                         await asyncio.sleep(cycle_interval)
                         self._log(f"\n  \U0001f4e5 Baixando e salvando {len(abas_ok)} foto(s)...")
 
-                        async def _baixar_e_substituir(dl_aba, foto_orig, nome_mod, pos):
+                        async def _baixar_e_salvar_pronto(dl_aba, foto_orig, nome_mod, pos):
                             self._log(f"  [{pos}] \u2193 {foto_orig.name}" + (f" [{nome_mod}]" if nome_mod else ""))
                             try:
-                                foto_saida = await self._fotos_baixar_e_substituir_async(
+                                foto_saida = await self._fotos_baixar_e_salvar_pronto_async(
                                     dl_aba, foto_orig, pos, False, nome_mod,
                                     src_anterior=srcs_anteriores_fotos.get(foto_orig))
                                 if foto_saida is None:
@@ -4646,7 +4853,7 @@ class MotionHubApp(tk.Tk):
                                 erros.append((foto_orig.name, foto_orig))
 
                         await asyncio.gather(*[
-                            _baixar_e_substituir(aba, foto, nome_mod, i + 1)
+                            _baixar_e_salvar_pronto(aba, foto, nome_mod, i + 1)
                             for i, (aba, foto, nome_mod) in enumerate(abas_ok)
                         ])
 
@@ -4701,7 +4908,7 @@ class MotionHubApp(tk.Tk):
         await asyncio.sleep(0.3)
         self._log("    ✓ Imagens + prompt prontos")
 
-    async def _fotos_baixar_e_substituir_async(
+    async def _fotos_baixar_e_salvar_pronto_async(
             self, page, foto_orig: Path, pos: int, fazer_backup: bool,
             nome_modelo: str = None, src_anterior=None):
         IMG_SEL = (
@@ -4751,13 +4958,25 @@ class MotionHubApp(tk.Tk):
 
             body = await response.body()
 
-            if fazer_backup and foto_orig.exists():
-                backup = foto_orig.with_suffix(f"{foto_orig.suffix}.bak")
-                shutil.copy2(foto_orig, backup)
+            modelo_dir = re.sub(r'[\\/:*?"<>|]', "_", nome_modelo or "Sem modelo").strip() or "Sem modelo"
+            destino_dir = READY_DIR / modelo_dir
+            destino_dir.mkdir(parents=True, exist_ok=True)
 
-            foto_orig.write_bytes(body)
-            foto_saida = self._converter_foto_celular(foto_orig)
-            self._log(f"    \u2713 Salva/convertida: {foto_saida.name}  ({len(body)//1024} KB)")
+            stem = re.sub(r'[\\/:*?"<>|]', "_", foto_orig.stem[:80])
+            sufixo_modelo = re.sub(r'[\\/:*?"<>|]', "_", nome_modelo or "")
+            nome_saida = f"{stem}_{sufixo_modelo}.jpg" if sufixo_modelo else f"{stem}.jpg"
+            destino = destino_dir / nome_saida
+            contador = 2
+            while destino.exists():
+                destino = destino_dir / f"{Path(nome_saida).stem}_{contador}.jpg"
+                contador += 1
+
+            destino.write_bytes(body)
+            foto_saida = self._converter_foto_celular(destino)
+            self._log(
+                f"    \u2713 Salva em • Pronto/{modelo_dir}: "
+                f"{foto_saida.name}  ({len(body)//1024} KB)"
+            )
             return foto_saida
 
         except Exception as e:
@@ -5989,7 +6208,7 @@ class MotionHubApp(tk.Tk):
     def _video_iniciar_audio(self, video_path, pos_s=0.0):
         """Inicia o ffplay em background para reproduzir o áudio do vídeo."""
         self._video_parar_audio()
-        ffplay = shutil.which("ffplay")
+        ffplay = _resolve_ffplay()
         if not ffplay:
             return  # ffplay não disponível — sem áudio, mas sem crash
         try:
@@ -6082,8 +6301,8 @@ class MotionHubApp(tk.Tk):
         ).start()
 
     def _video_processar_worker(self, itens, escolhas, pausas=None):
-        ffmpeg = shutil.which("ffmpeg")
-        ffprobe = shutil.which("ffprobe")
+        ffmpeg = _resolve_ffmpeg()
+        ffprobe = _resolve_ffprobe()
         erros = []
         concluidos = 0
         if not ffmpeg:
@@ -8779,8 +8998,8 @@ class MotionHubApp(tk.Tk):
         original somente se tudo correr bem. Levanta RuntimeError se
         ffmpeg/ffprobe nao estiverem disponiveis ou a conversao falhar;
         quem chama decide se trata isso como erro fatal ou so avisa."""
-        ffmpeg = shutil.which("ffmpeg")
-        ffprobe = shutil.which("ffprobe")
+        ffmpeg = _resolve_ffmpeg()
+        ffprobe = _resolve_ffprobe()
         if not ffmpeg or not ffprobe:
             raise RuntimeError(
                 "ffmpeg/ffprobe nao encontrados no PATH; instale o "

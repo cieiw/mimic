@@ -1,7 +1,7 @@
 {
   "window_geometry": "1919x1009+-6+0",
   "window_state": "normal",
-  "last_tab": 1,
+  "last_tab": 3,
   "auto_modelo": "#1Aurora",
   "flow_modelo": "exemplo2",
   "flow_prompt_ativo": "Padrão",
@@ -220,21 +220,22 @@
   ],
   "motion_profile_dir": "",
   "motion_aguardar_abrir": "70",
-  "fotos_prompt_edit": "Padrão",
-  "fotos_pasta": "C:/Users/cieiw/Documents/#Work/automacao/Swap/fotos",
+  "fotos_prompt_edit": "fotosnovas",
+  "fotos_pasta": "C:/Users/cieiw/Desktop/• scripts/Mimic/•• FotosOg",
   "motion_max_paralelo": "8",
   "motion_remover_marca_dagua": true,
-  "fotos_sends_per_cycle": "1",
+  "fotos_sends_per_cycle": "5",
   "fotos_delay": "15",
   "fotos_cycle_interval": "40",
   "motion_creditos_last_opened_ts": 1782538622.6487005,
   "fotos_max_parallel_profiles": "1",
   "flow_max_parallel_profiles": "1",
   "seletores": {
-    "uploads_btn": "#__next > div.sc-c7ee1759-1.jhwuTJ > div.sc-682f0b3f-0.iPxPxr > div.sc-265fb5e0-1.MnZmZ > div.sc-3ce961f7-1.gBAzKE:nth-child(5) > button.sc-e8425ea6-0.hOBPaw.sc-d3791a4f-0.sc-d3791a4f-5",
+    "uploads_btn": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=3515ad84-3fbf-4a3c-9a81-e4d920801317",
     "upload_container": "#__next > div:nth-child(1) > div:nth-child(4) > div:nth-child(2) > div > div > div > div:nth-child(2) > div:nth-child(1) > div",
-    "upload_img3": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=6435d767-da00-4150-ae4c-0ec2b75b539a",
-    "upload_img2": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=e01c984c-1c82-4735-8da3-9a7cf4a02f1f",
-    "upload_img1": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=38565c92-7c95-4444-a326-0361a71d83f7"
-  }
+    "upload_img3": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=e75dc9b9-e338-4988-9bf3-dfb00e6129f7",
+    "upload_img2": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=4f1d394d-0aba-401b-886d-7d25d28ed1cc",
+    "upload_img1": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=3515ad84-3fbf-4a3c-9a81-e4d920801317"
+  },
+  "fotos_aguardar_abrir": "15"
 }
