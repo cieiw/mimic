@@ -1,7 +1,7 @@
 {
-  "window_geometry": "1919x1009+-6+0",
+  "window_geometry": "1920x1009+36+112",
   "window_state": "normal",
-  "last_tab": 3,
+  "last_tab": 4,
   "auto_modelo": "#1Aurora",
   "flow_modelo": "exemplo2",
   "flow_prompt_ativo": "Padrão",
@@ -224,11 +224,11 @@
   "fotos_pasta": "C:/Users/cieiw/Desktop/• scripts/Mimic/•• FotosOg",
   "motion_max_paralelo": "8",
   "motion_remover_marca_dagua": true,
-  "fotos_sends_per_cycle": "5",
-  "fotos_delay": "15",
+  "fotos_sends_per_cycle": "3",
+  "fotos_delay": "20",
   "fotos_cycle_interval": "40",
   "motion_creditos_last_opened_ts": 1782538622.6487005,
-  "fotos_max_parallel_profiles": "1",
+  "fotos_max_parallel_profiles": "4",
   "flow_max_parallel_profiles": "1",
   "seletores": {
     "uploads_btn": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=3515ad84-3fbf-4a3c-9a81-e4d920801317",
@@ -237,5 +237,5 @@
     "upload_img2": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=4f1d394d-0aba-401b-886d-7d25d28ed1cc",
     "upload_img1": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=3515ad84-3fbf-4a3c-9a81-e4d920801317"
   },
-  "fotos_aguardar_abrir": "15"
+  "fotos_aguardar_abrir": "30"
 }

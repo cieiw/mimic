@@ -2558,6 +2558,68 @@ class MotionHubApp(tk.Tk):
         self._log(f"[{perfil['name']}] Chrome pronto na porta {porta}.")
         return True
 
+    async def _flow_garantir_perfis_abertos_juntos_async(
+            self, perfis, cfg_key="flow_aguardar_abrir",
+            attr="opt_aguardar_abrir"):
+        """Abre todos os perfis fechados ao mesmo tempo e espera uma vez so."""
+        perfis = [p for p in perfis if p]
+        fechados = [
+            p for p in perfis
+            if not self._flow_porta_respondendo(p.get("port"))
+        ]
+        if not fechados:
+            return False
+
+        nomes = ", ".join(f"{p['name']}:{p.get('port')}" for p in fechados)
+        self._log(f"Abrindo navegador(es) juntos: {nomes}")
+
+        resultados = await asyncio.gather(*[
+            asyncio.to_thread(self._flow_abrir_perfil, perfil)
+            for perfil in fechados
+        ], return_exceptions=True)
+
+        erros = [
+            f"{perfil['name']}: {resultado}"
+            for perfil, resultado in zip(fechados, resultados)
+            if isinstance(resultado, Exception)
+        ]
+        if erros:
+            raise RuntimeError(
+                "Nao foi possivel abrir todos os perfis:\n" + "\n".join(erros)
+            )
+
+        espera_abrir = self._flow_aguardar_abrir_segundos(cfg_key, attr)
+        self._log(
+            f"Aguardando {espera_abrir}s para todos os navegadores abrirem..."
+        )
+        await asyncio.sleep(espera_abrir)
+
+        espera_porta = 30
+        self._log(
+            f"Aguardando portas responderem juntas por ate {espera_porta}s..."
+        )
+        portas_ok = await asyncio.gather(*[
+            asyncio.to_thread(
+                self._flow_aguardar_porta,
+                perfil.get("port"),
+                espera_porta
+            )
+            for perfil in fechados
+        ])
+        falhas = [
+            f"{perfil['name']}:{perfil.get('port')}"
+            for perfil, ok in zip(fechados, portas_ok)
+            if not ok
+        ]
+        if falhas:
+            raise RuntimeError(
+                "Chrome abriu, mas estas portas nao responderam: "
+                + ", ".join(falhas)
+            )
+
+        self._log("Todos os navegadores estao prontos.")
+        return True
+
     def _abrir_chrome_debug(self):
         perfil = self._flow_profile_selecionado_dados()
         if not perfil:
@@ -2590,13 +2652,21 @@ class MotionHubApp(tk.Tk):
             return
         novos = []
         erros = []
-        for perfil in perfis:
+        def _abrir(perfil):
             try:
-                if not self._flow_abrir_perfil(perfil):
-                    novos.append(perfil["name"])
-                time.sleep(0.4)
+                return perfil, not self._flow_abrir_perfil(perfil), None
             except Exception as exc:
-                erros.append(f"{perfil['name']}: {exc}")
+                return perfil, False, exc
+
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(1, len(perfis))) as executor:
+            resultados = list(executor.map(_abrir, perfis))
+
+        for perfil, novo, erro in resultados:
+            if erro:
+                erros.append(f"{perfil['name']}: {erro}")
+            elif novo:
+                novos.append(perfil["name"])
         if novos:
             messagebox.showinfo(
                 "Novas sessoes Flow",
@@ -2813,6 +2883,16 @@ class MotionHubApp(tk.Tk):
                 f"{len(lote)} pasta(s)"
             )
 
+        try:
+            await self._flow_garantir_perfis_abertos_juntos_async(
+                [perfil for perfil, _ in distribuicoes]
+            )
+        except Exception as exc:
+            self.after(
+                0, lambda exc=exc: messagebox.showerror("Perfis Flow", str(exc))
+            )
+            return
+
         resultados = await asyncio.gather(*[
             self._enviar_flow_perfil_async(
                 perfil, lote, p_nome, p_texto,
@@ -2856,6 +2936,7 @@ class MotionHubApp(tk.Tk):
                     "arquivo": None,
                     "pos": pos_extra,
                     "erro": True,
+                    "origem": "video",
                 })
 
         if itens_revisao:
@@ -2882,13 +2963,10 @@ class MotionHubApp(tk.Tk):
         erro_geral = None
 
         try:
-            try:
-                self._flow_garantir_perfil_aberto(perfil)
-            except Exception as exc:
+            if not self._flow_porta_respondendo(porta):
                 raise RuntimeError(
-                    f"Nao foi possivel abrir o perfil '{perfil['name']}': "
-                    f"{exc}"
-                ) from exc
+                    f"O perfil '{perfil['name']}' nao respondeu na porta {porta}."
+                )
 
             async with async_playwright() as pw:
                 try:
@@ -3088,7 +3166,9 @@ class MotionHubApp(tk.Tk):
                             try:
                                 ok_dl = await self._baixar_primeira_galeria_async(
                                     dl_aba, dl_pasta, pos,
-                                    src_anterior=srcs_anteriores.get(dl_pasta)
+                                    src_anterior=srcs_anteriores.get(dl_pasta),
+                                    deletar_baixada=True,
+                                    contexto_delete=f"video {dl_pasta.name}"
                                 )
                                 if not ok_dl:
                                     erros.append((dl_pasta.name, dl_pasta))
@@ -3117,7 +3197,12 @@ class MotionHubApp(tk.Tk):
                 continue
             arquivo = pasta / f"frameNew ({pos}).jpg"
             if arquivo.exists():
-                itens_revisao.append({"pasta": pasta, "arquivo": arquivo, "pos": pos})
+                itens_revisao.append({
+                    "pasta": pasta,
+                    "arquivo": arquivo,
+                    "pos": pos,
+                    "origem": "video",
+                })
                 pastas_adicionadas.add(pasta)
         return {
             "perfil": perfil["name"],
@@ -3371,7 +3456,8 @@ class MotionHubApp(tk.Tk):
 
     async def _baixar_primeira_galeria_async(
             self, page, pasta: Path, pos: int = 1, src_anterior=None,
-            timeout_ms=60000, destino=None):
+            timeout_ms=60000, destino=None, deletar_baixada=False,
+            contexto_delete=""):
         """
         Busca o src da primeira imagem gerada na galeria do Flow e faz o
         download autenticado (usando a sessão já logada do Playwright).
@@ -3444,6 +3530,10 @@ class MotionHubApp(tk.Tk):
             destino.write_bytes(body)
             destino = self._converter_foto_celular(destino)
             self._log(f"    ✓ {destino.name} salvo em {pasta.name}  ({len(body)//1024} KB)")
+            if deletar_baixada:
+                await self._deletar_imagem_baixada_uploads_async(
+                    page, contexto_delete
+                )
             return True
 
         except Exception as e:
@@ -3898,6 +3988,104 @@ class MotionHubApp(tk.Tk):
         await page.keyboard.up("Control")
         await asyncio.sleep(0.35)
         self._log("    ✓ Imagem selecionada para edição")
+
+    async def _deletar_imagem_baixada_uploads_async(self, page, contexto=""):
+        """
+        Depois do download, clica a primeira imagem gerada na galeria atual e
+        aperta Delete. Nao abre Uploads.
+        """
+        try:
+            alvo = f" ({contexto})" if contexto else ""
+            self._log(f"    -> Selecionando com Ctrl e removendo primeira imagem da galeria{alvo}...")
+
+            IMG_SEL = (
+                "#__next > div.sc-c7ee1759-1.jhwuTJ "
+                "> div.sc-682f0b3f-0.iPxPxr "
+                "> div.sc-e4f4e472-0.iUuqJB "
+                "> div > div > div > div.sc-888a6226-2.iyGxUz "
+                "> div > div "
+                "> div:nth-child(1) > div > div > span > div > div > div > div > span > div > a > img"
+            )
+
+            clicou = False
+            try:
+                img_el = page.locator(IMG_SEL).first
+                await img_el.wait_for(state="visible", timeout=7000)
+                try:
+                    await img_el.scroll_into_view_if_needed(timeout=1500)
+                except Exception:
+                    pass
+                box = await img_el.bounding_box()
+                if box:
+                    x = box["x"] + box["width"] / 2
+                    y = box["y"] + box["height"] / 2
+                    self._log(f"    [debug] Ctrl+clique na 1a imagem ({x:.0f}, {y:.0f})")
+                    await page.keyboard.down("Control")
+                    try:
+                        await page.mouse.click(x, y)
+                    finally:
+                        await page.keyboard.up("Control")
+                else:
+                    await img_el.click(
+                        timeout=3000,
+                        force=True,
+                        modifiers=["Control"]
+                    )
+                clicou = True
+            except Exception as seletor_erro:
+                self._log(
+                    "    ~ seletor da 1a imagem falhou; tentando fallback visual "
+                    f"({str(seletor_erro).splitlines()[0]})"
+                )
+                rect = await page.evaluate(
+                    """
+                    () => {
+                        const imgs = [...document.images]
+                            .map((img) => {
+                                const r = img.getBoundingClientRect();
+                                return {
+                                    x: r.left + r.width / 2,
+                                    y: r.top + r.height / 2,
+                                    top: r.top,
+                                    left: r.left,
+                                    w: r.width,
+                                    h: r.height,
+                                    src: img.currentSrc || img.src || ""
+                                };
+                            })
+                            .filter((r) =>
+                                r.w >= 80 && r.h >= 80 &&
+                                r.x >= 0 && r.y >= 0 &&
+                                r.x <= innerWidth && r.y <= innerHeight
+                            )
+                            .sort((a, b) => (a.top - b.top) || (a.left - b.left));
+                        return imgs[0] || null;
+                    }
+                    """
+                )
+                if not rect:
+                    raise RuntimeError("Nenhuma imagem visivel encontrada na galeria.")
+                self._log(
+                    f"    [debug] fallback Ctrl+clique imagem ({rect['x']:.0f}, {rect['y']:.0f})"
+                )
+                await page.keyboard.down("Control")
+                try:
+                    await page.mouse.click(float(rect["x"]), float(rect["y"]))
+                finally:
+                    await page.keyboard.up("Control")
+                clicou = True
+
+            if not clicou:
+                raise RuntimeError("Nao foi possivel clicar na primeira imagem.")
+
+            await asyncio.sleep(0.25)
+            await page.keyboard.press("Delete")
+            await asyncio.sleep(0.5)
+            self._log("    OK primeira imagem deletada da galeria")
+            return True
+        except Exception as e:
+            self._log(f"    AVISO nao foi possivel deletar a imagem baixada: {e}")
+            return False
 
     async def _deletar_ultima_imagem_uploads_flow_async(self, page):
         """
@@ -4382,6 +4570,7 @@ class MotionHubApp(tk.Tk):
                     "pasta":   pasta_dest,
                     "arquivo": frame_new,
                     "pos":     pos,
+                    "origem":  "foto",
                 })
 
             except Exception as e:
@@ -4534,22 +4723,23 @@ class MotionHubApp(tk.Tk):
         self.fotos_prompt_text.delete("1.0", "end")
         self.fotos_prompt_text.insert("end", texto)
 
+    def _foto_review_key(self, foto_path, nome_modelo=None):
+        try:
+            foto = str(Path(foto_path).resolve()).lower()
+        except Exception:
+            foto = str(foto_path).lower()
+        return f"foto::{foto}::{nome_modelo or ''}"
+
     def _fotos_enviar_thread(self):
         def _run():
             asyncio.run(self._fotos_enviar_async())
         threading.Thread(target=_run, daemon=True).start()
 
-    async def _fotos_enviar_async(self):
+    async def _fotos_enviar_async(self, fotos_override=None):
         if not PLAYWRIGHT_AVAILABLE:
             self.after(0, lambda: messagebox.showerror("Erro",
                 "Playwright nao instalado.\n"
                 "Execute:\npip install playwright\nplaywright install chromium"))
-            return
-
-        pasta_str = self.fotos_pasta_var.get().strip()
-        if not pasta_str or not os.path.isdir(pasta_str):
-            self.after(0, lambda: messagebox.showerror(
-                "Erro", "Selecione uma pasta de fotos valida."))
             return
 
         p_texto = self.fotos_prompt_text.get("1.0", "end").rstrip()
@@ -4558,29 +4748,40 @@ class MotionHubApp(tk.Tk):
                 "Erro", "O prompt esta vazio."))
             return
 
-        exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-        pasta = Path(pasta_str)
-        todas_fotos = sorted(
-            f for f in pasta.iterdir()
-            if f.is_file() and f.suffix.lower() in exts
-            and not f.name.endswith(".bak")
-        )
+        fotos_override = list(fotos_override or [])
+        if fotos_override:
+            fotos_sel = [Path(item[0]) for item in fotos_override]
+        else:
+            pasta_str = self.fotos_pasta_var.get().strip()
+            if not pasta_str or not os.path.isdir(pasta_str):
+                self.after(0, lambda: messagebox.showerror(
+                    "Erro", "Selecione uma pasta de fotos valida."))
+                return
 
-        sel = self.fotos_listbox.curselection()
-        fotos_sel = ([todas_fotos[i] for i in sel if i < len(todas_fotos)]
-                     if sel else todas_fotos)
+            exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+            pasta = Path(pasta_str)
+            todas_fotos = sorted(
+                f for f in pasta.iterdir()
+                if f.is_file() and f.suffix.lower() in exts
+                and not f.name.endswith(".bak")
+            )
+
+            sel = self.fotos_listbox.curselection()
+            fotos_sel = ([todas_fotos[i] for i in sel if i < len(todas_fotos)]
+                         if sel else todas_fotos)
 
         if not fotos_sel:
             self.after(0, lambda: messagebox.showwarning(
                 "Aviso", "Nenhuma foto encontrada na pasta."))
             return
 
-        fotos_sel = self._deduplicar_caminhos_por_imagem(
-            fotos_sel,
-            imagem_resolver=lambda foto: Path(foto),
-            label="foto"
-        )
-        if not fotos_sel:
+        if not fotos_override:
+            fotos_sel = self._deduplicar_caminhos_por_imagem(
+                fotos_sel,
+                imagem_resolver=lambda foto: Path(foto),
+                label="foto"
+            )
+        if not fotos_override and not fotos_sel:
             self.after(0, lambda: messagebox.showwarning(
                 "Fotos", "Nenhuma foto única sobrou para enviar."))
             return
@@ -4618,12 +4819,17 @@ class MotionHubApp(tk.Tk):
         fazer_backup = self.fotos_backup_var.get()
 
         # Modelos selecionadas com fotos de referência
-        modelos_sel = self._fotos_modelos_selecionadas()
+        modelos_sel = [] if fotos_override else self._fotos_modelos_selecionadas()
 
         # Se há modelos selecionadas, expande: cada foto × cada modelo
         # Cada item: (foto_path, nome_modelo, [ref1, ref2])
         # Se nenhuma modelo: item = (foto_path, None, [])
-        if modelos_sel:
+        if fotos_override:
+            fotos_expandidas = [
+                (Path(foto), nome_mod, list(refs or []))
+                for foto, nome_mod, refs in fotos_override
+            ]
+        elif modelos_sel:
             # Agrupa por foto: [foto1_A, foto1_B, ..., foto2_A, foto2_B, ...]
             # Assim a mesma foto base não é enviada para perfis diferentes ao mesmo tempo.
             por_modelo = []
@@ -4667,6 +4873,18 @@ class MotionHubApp(tk.Tk):
         for perfil, lote in distribuicoes:
             self._log(f"   {perfil['name']} (porta {perfil['port']}): {len(lote)} item(s)")
 
+        try:
+            await self._flow_garantir_perfis_abertos_juntos_async(
+                [perfil for perfil, _ in distribuicoes],
+                cfg_key="fotos_aguardar_abrir",
+                attr="fotos_aguardar_abrir"
+            )
+        except Exception as exc:
+            self.after(
+                0, lambda exc=exc: messagebox.showerror("Perfis Flow", str(exc))
+            )
+            return
+
         resultados = await asyncio.gather(*[
             self._fotos_enviar_perfil_async(
                 perfil, lote, p_texto,
@@ -4692,10 +4910,34 @@ class MotionHubApp(tk.Tk):
 
         # Envia todas as fotos geradas para a aba Revisão
         if fotos_geradas or erros:
-            itens_revisao = [
-                {"pasta": f.parent, "arquivo": f, "pos": i + 1}
-                for i, f in enumerate(fotos_geradas)
-            ]
+            itens_revisao = []
+            for i, registro in enumerate(fotos_geradas):
+                if isinstance(registro, dict):
+                    arquivo = Path(registro["arquivo"])
+                    foto_origem = Path(registro.get("foto_origem", arquivo))
+                    nome_modelo = registro.get("nome_modelo")
+                    itens_revisao.append({
+                        "pasta": Path(registro.get("pasta", arquivo.parent)),
+                        "arquivo": arquivo,
+                        "pos": i + 1,
+                        "origem": "foto",
+                        "foto_origem": foto_origem,
+                        "nome_modelo": nome_modelo,
+                        "refs": list(registro.get("refs") or []),
+                        "review_key": self._foto_review_key(foto_origem, nome_modelo),
+                    })
+                else:
+                    arquivo = Path(registro)
+                    itens_revisao.append({
+                        "pasta": arquivo.parent,
+                        "arquivo": arquivo,
+                        "pos": i + 1,
+                        "origem": "foto",
+                        "foto_origem": arquivo,
+                        "nome_modelo": None,
+                        "refs": [],
+                        "review_key": self._foto_review_key(arquivo, None),
+                    })
             # Adiciona erros à revisão marcados para refazer
             pos_extra = len(fotos_geradas)
             vistos = set()
@@ -4711,6 +4953,11 @@ class MotionHubApp(tk.Tk):
                     "arquivo": None,
                     "pos": pos_extra,
                     "erro": True,
+                    "origem": "foto",
+                    "foto_origem": Path(foto_path),
+                    "nome_modelo": None,
+                    "refs": [],
+                    "review_key": self._foto_review_key(foto_path, None),
                 })
             itens_revisao.sort(key=lambda item: item["pos"])
             self.after(0, lambda itens=itens_revisao: self._abrir_revisao(itens))
@@ -4731,13 +4978,10 @@ class MotionHubApp(tk.Tk):
         self._log(f"{prefixo} Fotos: {total} | Ciclos: {total_ciclos}")
 
         try:
-            try:
-                self._flow_garantir_perfil_aberto(perfil, cfg_key="fotos_aguardar_abrir", attr="fotos_aguardar_abrir")
-            except Exception as exc:
+            if not self._flow_porta_respondendo(porta):
                 raise RuntimeError(
-                    f"Nao foi possivel abrir o perfil '{perfil['name']}': "
-                    f"{exc}"
-                ) from exc
+                    f"O perfil '{perfil['name']}' nao respondeu na porta {porta}."
+                )
 
             async with async_playwright() as pw:
                 try:
@@ -4789,16 +5033,20 @@ class MotionHubApp(tk.Tk):
                         self._log(f"\n  [Aba {tab_i+1}/{n_abas}] \U0001f4f7 {label}")
                         try:
                             await self._fotos_preparar_aba_async(aba, str(foto_path), p_texto, fotos_ref=refs)
-                            return (aba, foto_path, nome_mod, True)
+                            return (aba, foto_path, nome_mod, refs, True)
                         except Exception as e:
                             self._log(f"  [Aba {tab_i+1}] \u2717 Erro na preparacao: {e}")
                             erros.append((foto_path.name, foto_path))
-                            return (aba, foto_path, nome_mod, False)
+                            return (aba, foto_path, nome_mod, refs, False)
 
                     abas_info = await asyncio.gather(*[
                         _preparar_slot_foto(i, item) for i, item in enumerate(ciclo_fotos)
                     ])
-                    abas_ok = [(aba, foto, nome_mod) for aba, foto, nome_mod, ok in abas_info if ok]
+                    abas_ok = [
+                        (aba, foto, nome_mod, refs)
+                        for aba, foto, nome_mod, refs, ok in abas_info
+                        if ok
+                    ]
 
                     if abas_ok:
                         self._log(f"\n  \u23f3 FASE 2 \u2014 Aguardando {delay_img}s...")
@@ -4829,7 +5077,7 @@ class MotionHubApp(tk.Tk):
 
                     await asyncio.gather(*[
                         _enviar_aba_foto(aba, foto, i + 1, len(abas_ok))
-                        for i, (aba, foto, nome_mod) in enumerate(abas_ok)
+                        for i, (aba, foto, nome_mod, refs) in enumerate(abas_ok)
                     ])
 
                     # FASE 4 download e salvamento em • Pronto
@@ -4838,7 +5086,7 @@ class MotionHubApp(tk.Tk):
                         await asyncio.sleep(cycle_interval)
                         self._log(f"\n  \U0001f4e5 Baixando e salvando {len(abas_ok)} foto(s)...")
 
-                        async def _baixar_e_salvar_pronto(dl_aba, foto_orig, nome_mod, pos):
+                        async def _baixar_e_salvar_pronto(dl_aba, foto_orig, nome_mod, refs, pos):
                             self._log(f"  [{pos}] \u2193 {foto_orig.name}" + (f" [{nome_mod}]" if nome_mod else ""))
                             try:
                                 foto_saida = await self._fotos_baixar_e_salvar_pronto_async(
@@ -4847,14 +5095,20 @@ class MotionHubApp(tk.Tk):
                                 if foto_saida is None:
                                     erros.append((foto_orig.name, foto_orig))
                                 else:
-                                    fotos_ok.append(foto_saida)
+                                    fotos_ok.append({
+                                        "arquivo": foto_saida,
+                                        "pasta": foto_saida.parent,
+                                        "foto_origem": Path(foto_orig),
+                                        "nome_modelo": nome_mod,
+                                        "refs": list(refs or []),
+                                    })
                             except Exception as e:
                                 self._log(f"  [{pos}] \u26a0 Falha: {e}")
                                 erros.append((foto_orig.name, foto_orig))
 
                         await asyncio.gather(*[
-                            _baixar_e_salvar_pronto(aba, foto, nome_mod, i + 1)
-                            for i, (aba, foto, nome_mod) in enumerate(abas_ok)
+                            _baixar_e_salvar_pronto(aba, foto, nome_mod, refs, i + 1)
+                            for i, (aba, foto, nome_mod, refs) in enumerate(abas_ok)
                         ])
 
         except Exception as e:
@@ -4977,6 +5231,9 @@ class MotionHubApp(tk.Tk):
                 f"    \u2713 Salva em • Pronto/{modelo_dir}: "
                 f"{foto_saida.name}  ({len(body)//1024} KB)"
             )
+            await self._deletar_imagem_baixada_uploads_async(
+                page, f"foto {foto_orig.name}"
+            )
             return foto_saida
 
         except Exception as e:
@@ -5017,6 +5274,45 @@ class MotionHubApp(tk.Tk):
         momento = item.get("editado_em") or item.get("gerado_em") or 0
         return (prioridade, -float(momento), item.get("pos", 0))
 
+    def _revisao_item_chave(self, item):
+        if item.get("review_key"):
+            return item["review_key"]
+        if item.get("origem") == "foto" and item.get("foto_origem"):
+            return self._foto_review_key(
+                item.get("foto_origem"), item.get("nome_modelo")
+            )
+        if item.get("pasta_trabalho"):
+            try:
+                return ("work", str(Path(item["pasta_trabalho"]).resolve()).lower())
+            except Exception:
+                return ("work", str(item["pasta_trabalho"]).lower())
+        if item.get("pasta"):
+            try:
+                return ("pasta", str(Path(item["pasta"]).resolve()).lower())
+            except Exception:
+                return ("pasta", str(item["pasta"]).lower())
+        if item.get("arquivo"):
+            try:
+                return ("arquivo", str(Path(item["arquivo"]).resolve()).lower())
+            except Exception:
+                return ("arquivo", str(item["arquivo"]).lower())
+        return ("item", id(item))
+
+    def _revisao_pasta_trabalho(self, item):
+        candidatos = []
+        if item.get("pasta_trabalho"):
+            candidatos.append(item.get("pasta_trabalho"))
+        if item.get("pasta"):
+            candidatos.append(item.get("pasta"))
+        for candidato in candidatos:
+            try:
+                pasta = Path(candidato)
+                if pasta.is_dir() and (pasta / "frameog.jpg").exists():
+                    return pasta
+            except Exception:
+                pass
+        return None
+
     def _abrir_revisao(self, itens):
         """
         Chamado ao fim do processo com a lista de itens gerados.
@@ -5029,15 +5325,26 @@ class MotionHubApp(tk.Tk):
         C = self.colors
 
         anteriores = getattr(self, "_revisao_itens", []) or []
-        pastas_novas = {item["pasta"] for item in itens if item.get("pasta")}
-        # Detecta pastas que existiam antes (são regenerações)
-        pastas_anteriores = {it["pasta"] for it in anteriores if it.get("pasta")}
         for item in itens:
-            if item.get("pasta") and item["pasta"] in pastas_anteriores:
+            pasta_trabalho = self._revisao_pasta_trabalho(item)
+            if pasta_trabalho:
+                item.setdefault("pasta_trabalho", pasta_trabalho)
+        chaves_novas = {self._revisao_item_chave(item) for item in itens}
+        # Detecta pastas que existiam antes (são regenerações)
+        chaves_anteriores = {self._revisao_item_chave(it) for it in anteriores}
+        for item in itens:
+            if self._revisao_item_chave(item) in chaves_anteriores:
                 item["regenerado"] = True
                 item["gerado_em"] = time.time()
-        mesclados = [it for it in anteriores if it.get("pasta") and it["pasta"] not in pastas_novas]
+        mesclados = [
+            it for it in anteriores
+            if self._revisao_item_chave(it) not in chaves_novas
+        ]
         mesclados.extend(itens)
+        unicos = {}
+        for item in mesclados:
+            unicos[self._revisao_item_chave(item)] = item
+        mesclados = list(unicos.values())
         mesclados.sort(key=self._revisao_sort_key)
 
         self._revisao_itens = mesclados
@@ -5157,7 +5464,11 @@ class MotionHubApp(tk.Tk):
             self._rev_btn_prev.state(["disabled"] if idx == 0     else ["!disabled"])
             self._rev_btn_next.state(["disabled"] if idx == n - 1 else ["!disabled"])
             return
-        frameog_path = item["pasta"] / "frameog.jpg"
+        pasta_trabalho = self._revisao_pasta_trabalho(item)
+        frameog_path = (
+            pasta_trabalho / "frameog.jpg"
+            if pasta_trabalho else item["pasta"] / "frameog.jpg"
+        )
         if item.get("erro") or not item["arquivo"]:
             if PIL_AVAILABLE and frameog_path.exists():
                 try:
@@ -5339,10 +5650,12 @@ class MotionHubApp(tk.Tk):
         self._log(f"\n✏ Edição: {arquivo.name}")
         self._log(f"   Prompt: {prompt}")
 
+        origem = item.get("origem", "video")
+
         def _run():
             try:
                 destino = asyncio.run(
-                    self._rev_enviar_edicao_async(arquivo, prompt)
+                    self._rev_enviar_edicao_async(arquivo, prompt, origem=origem)
                 )
                 self.after(
                     0, lambda: self._rev_finalizar_edicao(item, destino)
@@ -5376,7 +5689,8 @@ class MotionHubApp(tk.Tk):
             f"Edicao concluida!\nArquivo substituido: {destino.name}"
         )
 
-    async def _rev_enviar_edicao_async(self, arquivo: Path, prompt: str):
+    async def _rev_enviar_edicao_async(
+            self, arquivo: Path, prompt: str, origem="video"):
         """
         Fluxo de edição de uma única imagem na aba Revisão (tecla E).
 
@@ -5460,7 +5774,7 @@ class MotionHubApp(tk.Tk):
         porta = int(perfil.get("port", 9222))
         self._log(f"   → Conectando ao perfil '{perfil['name']}' (porta {porta})...")
         try:
-            self._flow_garantir_perfil_aberto(perfil)
+            await self._flow_garantir_perfis_abertos_juntos_async([perfil])
         except Exception as exc:
             raise RuntimeError(
                 f"Nao foi possivel abrir o perfil '{perfil['name']}': {exc}"
@@ -5580,7 +5894,9 @@ class MotionHubApp(tk.Tk):
                 pasta_destino = arquivo.parent
                 ok_baixou = await self._baixar_primeira_galeria_async(
                     page, pasta_destino, src_anterior=src_anterior,
-                    destino=arquivo
+                    destino=arquivo,
+                    deletar_baixada=True,
+                    contexto_delete=f"revisao {origem}"
                 )
                 if ok_baixou:
                     self._log("   ✓ Imagem baixada com sucesso")
@@ -5614,28 +5930,26 @@ class MotionHubApp(tk.Tk):
             for it in marcadas
         )
         if not messagebox.askyesno("Confirmar exclusão",
-                f"Deletar {len(marcadas)} pasta(s) permanentemente?\n\n{nomes}\n\n"
-                "Esta ação não pode ser desfeita."):
+                f"Remover {len(marcadas)} item(ns) da revisao?\n\n{nomes}\n\n"
+                "As pastas de trabalho serao preservadas."):
             return
         removidos = 0
         for item in marcadas:
-            pasta = item.get("pasta")
-            if not pasta:
-                self._log("  ⚠ Item sem pasta definida, ignorado.")
-                continue
             try:
-                if pasta.exists():
-                    shutil.rmtree(pasta)
-                    self._log(f"  🗑 Pasta deletada: {pasta.name}")
+                arquivo = item.get("arquivo")
+                if arquivo and Path(arquivo).exists():
+                    Path(arquivo).unlink()
+                    self._log(f"  Arquivo removido: {Path(arquivo).name}")
                     removidos += 1
                 else:
-                    self._log(f"  ⚠ Pasta não encontrada: {pasta.name}")
+                    self._log("  Item removido da revisao sem apagar pasta.")
+                    removidos += 1
             except Exception as e:
-                self._log(f"  ❌ Erro ao deletar {pasta.name}: {e}")
+                self._log(f"  Erro ao remover item da revisao: {e}")
         # Remove os itens deletados do carrossel
         indices_manter = [
             i for i, item in enumerate(self._revisao_itens)
-            if not (self._revisao_vars[i].get() and item.get("pasta") and not item["pasta"].exists())
+            if not self._revisao_vars[i].get()
         ]
         novos_itens = [self._revisao_itens[i] for i in indices_manter]
         if novos_itens:
@@ -5646,8 +5960,8 @@ class MotionHubApp(tk.Tk):
             self._rev_mostrar(0)
         else:
             self._build_revisao_vazia()
-        self._log(f"  ✓ {removidos} pasta(s) deletada(s).")
-        messagebox.showinfo("Deletar marcadas", f"{removidos} pasta(s) deletada(s) com sucesso.")
+        self._log(f"  {removidos} item(ns) removido(s) da revisao.")
+        messagebox.showinfo("Deletar marcadas", f"{removidos} item(ns) removido(s).")
 
     def _refazer_marcadas(self):
         marcadas = [self._revisao_itens[i]
@@ -5665,6 +5979,10 @@ class MotionHubApp(tk.Tk):
             return
         # Apaga os frameNew marcados e dispara o reprocessamento
         pastas_refazer = []
+        fotos_refazer = []
+        ignorados = []
+        pastas_vistas = set()
+        fotos_vistas = set()
         for item in marcadas:
             pasta_nome = item["pasta"].name if item.get("pasta") else "(desconhecida)"
             if item.get("arquivo"):
@@ -5676,8 +5994,38 @@ class MotionHubApp(tk.Tk):
                     self._log(f"  ⚠ Não foi possível remover {item['arquivo'].name}: {e}")
             else:
                 self._log(f"  ↩ {pasta_nome} — sem arquivo gerado, será reprocessada")
-            if item.get("pasta"):
-                pastas_refazer.append(item["pasta"])
+            if item.get("origem") == "foto":
+                foto_origem = item.get("foto_origem")
+                if foto_origem and Path(foto_origem).exists():
+                    chave = self._foto_review_key(
+                        foto_origem, item.get("nome_modelo")
+                    )
+                    if chave not in fotos_vistas:
+                        fotos_vistas.add(chave)
+                        fotos_refazer.append((
+                            Path(foto_origem),
+                            item.get("nome_modelo"),
+                            list(item.get("refs") or [])
+                        ))
+                    continue
+
+            pasta_trabalho = self._revisao_pasta_trabalho(item)
+            if pasta_trabalho:
+                try:
+                    chave = str(pasta_trabalho.resolve()).lower()
+                except Exception:
+                    chave = str(pasta_trabalho).lower()
+                if chave not in pastas_vistas:
+                    pastas_vistas.add(chave)
+                    pastas_refazer.append(pasta_trabalho)
+            else:
+                ignorados.append(pasta_nome)
+
+        for nome in ignorados:
+            self._log(
+                f"  ⚠ {nome} ignorado: sem pasta de trabalho com frameog.jpg "
+                "e sem foto_origem para refazer."
+            )
 
         # Valida perfis e prompt ANTES de lançar a thread (na thread principal do tkinter)
         perfis = self._flow_perfis_ativos()
@@ -5688,8 +6036,15 @@ class MotionHubApp(tk.Tk):
             )
             return
 
+        if not pastas_refazer and not fotos_refazer:
+            messagebox.showwarning(
+                "Revisao",
+                "Nenhum item marcado pode ser refeito com os dados atuais."
+            )
+            return
+
         p_texto = self.prompt_text.get("1.0", "end").rstrip()
-        if not p_texto:
+        if pastas_refazer and not p_texto:
             messagebox.showerror(
                 "Erro",
                 "O prompt está vazio. Escreva ou selecione um prompt antes de refazer."
@@ -5697,8 +6052,12 @@ class MotionHubApp(tk.Tk):
             return
 
         # Reutiliza a lógica de envio Flow com as pastas marcadas
-        self._log(f"\n🔁 Refazendo {len(pastas_refazer)} pasta(s)...")
-        self._iniciar_flow_com_pastas(pastas_refazer)
+        if pastas_refazer:
+            self._log(f"\n🔁 Refazendo {len(pastas_refazer)} pasta(s)...")
+            self._iniciar_flow_com_pastas(pastas_refazer)
+        if fotos_refazer:
+            self._log(f"\nRefazendo {len(fotos_refazer)} foto(s)...")
+            self._iniciar_fotos_com_itens(fotos_refazer)
 
     def _iniciar_flow_com_pastas(self, pastas):
         """Dispara o envio Flow para uma lista específica de pastas (reprocessamento)."""
@@ -5713,6 +6072,24 @@ class MotionHubApp(tk.Tk):
                 self.after(
                     0, lambda: messagebox.showerror(
                         "Erro ao refazer",
+                        f"Falha ao iniciar o reprocessamento:\n\n{exc}"
+                    )
+                )
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _iniciar_fotos_com_itens(self, fotos):
+        """Dispara o envio de Fotos para itens especificos da Revisao."""
+        def _run():
+            try:
+                asyncio.run(self._fotos_enviar_async(fotos_override=fotos))
+            except Exception as exc:
+                import traceback
+                erro_txt = traceback.format_exc()
+                self._log(f"ERRO ao refazer fotos: {exc}")
+                self._log(erro_txt)
+                self.after(
+                    0, lambda: messagebox.showerror(
+                        "Erro ao refazer fotos",
                         f"Falha ao iniciar o reprocessamento:\n\n{exc}"
                     )
                 )
