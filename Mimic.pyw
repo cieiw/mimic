@@ -1621,6 +1621,8 @@ class MotionHubApp(tk.Tk):
         pf_btns.pack(fill="x", pady=(0, 6))
         ttk.Button(pf_btns, text="Limpar",
                    command=self._limpar_pastas_work).pack(side="left", padx=(0, 3))
+        ttk.Button(pf_btns, text="Limpar • Pronto",
+                   command=self._limpar_arquivos_pronto).pack(side="left", padx=(0, 3))
         ttk.Button(pf_btns, text="↻",
                    command=self._atualizar_pastas_flow).pack(side="left")
 
@@ -1711,12 +1713,11 @@ class MotionHubApp(tk.Tk):
         tf = ttk.LabelFrame(col_c, text="Timers / Ciclos")
         tf.pack(fill="x", pady=(0, 6))
         timer_defs = [
-            ("Perfis simultâneos:", "flow_max_parallel_profiles", "0",  "opt_max_parallel_profiles", "(0 = todos)"),
+            ("Perfis simultaneos:", "flow_max_parallel_profiles", "0",  "opt_max_parallel_profiles", "(0 = todos ativos)"),
             ("Aguardar navegador (s):",   "flow_aguardar_abrir",   "10", "opt_aguardar_abrir",        "antes de conectar"),
-            ("Aguardar imagens (s):",     "flow_delay",            "10", "opt_delay",                 "após imagens"),
-            ("Intervalo envios (s):",     "flow_send_interval",    "10", "opt_send_interval",         "entre pastas"),
-            ("Intervalo ciclos (s):",     "flow_cycle_interval",   "60", "opt_cycle_interval",        "pausa/ciclo"),
-            ("Abas por perfil/ciclo:",    "flow_sends_per_cycle",  "3",  "opt_sends_per_cycle",       "abas/ciclo"),
+            ("Aguardar imagens carregarem (s):", "flow_delay",     "10", "opt_delay",                 "apos enviar imagens"),
+            ("Intervalo entre ciclos (s):", "flow_cycle_interval", "60", "opt_cycle_interval",        "pausa apos cada lote"),
+            ("Abas por perfil/ciclo:",    "flow_sends_per_cycle",  "3",  "opt_sends_per_cycle",       "quantas abas cada perfil usa ao mesmo tempo"),
         ]
         for row_i, (lbl, key, default, attr, hint) in enumerate(timer_defs):
             tk.Label(tf, text=lbl, bg=C["BG2"], fg=C["FG"],
@@ -1728,7 +1729,8 @@ class MotionHubApp(tk.Tk):
             tk.Label(tf, text=hint, bg=C["BG2"], fg=C["FG2"],
                      font=("Segoe UI", 7)).grid(row=row_i, column=2, sticky="w", padx=(2, 4), pady=1)
         tf.columnconfigure(2, weight=1)
-        self.opt_prompt_delay = self.opt_send_interval  # compat
+        self.opt_send_interval = self.opt_cycle_interval  # compat
+        self.opt_prompt_delay = self.opt_cycle_interval  # compat
 
         # --- Prompt ---
         prf = ttk.LabelFrame(bottom, text="Prompt")
@@ -2836,6 +2838,40 @@ class MotionHubApp(tk.Tk):
                 "Algumas pastas não foram apagadas:\n" + "\n".join(erros[:8])
             )
 
+    def _limpar_arquivos_pronto(self):
+        READY_DIR.mkdir(parents=True, exist_ok=True)
+        itens = sorted(READY_DIR.iterdir())
+        if not itens:
+            self._log("• Pronto: nada para apagar.")
+            return
+        if not messagebox.askyesno(
+            "Limpar • Pronto",
+            f"Apagar tudo em:\n{READY_DIR}?"
+        ):
+            return
+        base = READY_DIR.resolve()
+        apagados = 0
+        erros = []
+        for item in itens:
+            try:
+                alvo = item.resolve()
+                if alvo.parent != base:
+                    raise RuntimeError("caminho fora de • Pronto")
+                if alvo.is_dir():
+                    shutil.rmtree(alvo)
+                else:
+                    alvo.unlink()
+                apagados += 1
+            except Exception as exc:
+                erros.append(f"{item.name}: {exc}")
+        READY_DIR.mkdir(parents=True, exist_ok=True)
+        self._log(f"• Pronto: {apagados} item(ns) apagado(s).")
+        if erros:
+            messagebox.showwarning(
+                "Limpar • Pronto",
+                "Alguns itens não foram apagados:\n" + "\n".join(erros[:8])
+            )
+
     def _enviar_flow_thread(self):
         if getattr(self, "_flow_enviando", False):
             messagebox.showwarning("Flow", "Ja existe um envio Flow em andamento.")
@@ -2964,23 +3000,35 @@ class MotionHubApp(tk.Tk):
         }
         resultados = []
         pendentes = list(pastas_sel)
+        perfis_com_driver_falho = set()
         rodada = 0
         while pendentes:
             rodada += 1
             perfis_todos = self._flow_perfis_ativos()
+            perfis_todos = [
+                p for p in perfis_todos
+                if str(p.get("id") or p.get("port")) not in perfis_com_driver_falho
+            ]
             perfis, limite_perfis = self._limitar_perfis_ativos(
                 perfis_todos,
                 getattr(self, "opt_max_parallel_profiles", None),
                 padrao=0
             )
             if not perfis:
+                motivo_sem_perfil = (
+                    "Todos os perfis restantes perderam a conexao do driver nesta execucao."
+                    if perfis_com_driver_falho
+                    else "Nenhum perfil Flow com creditos disponivel."
+                )
                 for pasta in pendentes:
                     resultados.append({
                         "perfil": "(sem perfil)",
                         "erros": [(Path(pasta).name, Path(pasta))],
                         "itens_revisao": [],
-                        "erro_geral": "Nenhum perfil Flow com creditos disponivel.",
+                        "erro_geral": motivo_sem_perfil,
                         "limite_diario_pastas": [],
+                        "driver_falha_pastas": [],
+                        "driver_falhou": False,
                     })
                 self._log(
                     "  ⚠ Sem perfis Flow disponiveis; itens restantes foram para revisão."
@@ -3047,7 +3095,23 @@ class MotionHubApp(tk.Tk):
             pendentes = []
             vistos_pendentes = set()
             for resultado in resultados_rodada:
+                if resultado.get("driver_falhou"):
+                    perfil_key = str(
+                        resultado.get("perfil_id")
+                        or resultado.get("perfil_port")
+                        or resultado.get("perfil")
+                    )
+                    perfis_com_driver_falho.add(perfil_key)
+                    self._log(
+                        f"  ↪ {resultado.get('perfil')}: conexão do driver caiu; "
+                        "perfil pulado no restante desta execução."
+                    )
                 for pasta in resultado.get("limite_diario_pastas", []):
+                    chave = str(Path(pasta).resolve()).lower()
+                    if chave not in vistos_pendentes:
+                        vistos_pendentes.add(chave)
+                        pendentes.append(Path(pasta))
+                for pasta in resultado.get("driver_falha_pastas", []):
                     chave = str(Path(pasta).resolve()).lower()
                     if chave not in vistos_pendentes:
                         vistos_pendentes.add(chave)
@@ -3055,7 +3119,7 @@ class MotionHubApp(tk.Tk):
             if pendentes:
                 self._log(
                     f"  ↪ {len(pendentes)} pasta(s) voltaram para a fila "
-                    "por limite diario de perfil."
+                    "por limite diario ou queda de driver."
                 )
 
         erros = []
@@ -3117,7 +3181,21 @@ class MotionHubApp(tk.Tk):
         erros = []  # list[(nome_str, pasta_path)]
         downloads_pendentes = []
         limite_diario_pastas = []
+        driver_falha_pastas = []
+        driver_falhou = False
         erro_geral = None
+
+        def _adicionar_driver_falha(pastas):
+            vistos = {
+                str(Path(pasta).resolve()).lower()
+                for pasta in driver_falha_pastas
+            }
+            for pasta in pastas:
+                chave = str(Path(pasta).resolve()).lower()
+                if chave in vistos:
+                    continue
+                vistos.add(chave)
+                driver_falha_pastas.append(Path(pasta))
 
         try:
             if not self._flow_porta_respondendo(porta):
@@ -3192,6 +3270,7 @@ class MotionHubApp(tk.Tk):
                     )
 
                     async def _preparar_slot(tab_i, pasta):
+                        nonlocal driver_falhou
                         aba        = abas_flow[tab_i]
                         global_num = posicoes_globais[pasta]
 
@@ -3244,6 +3323,13 @@ class MotionHubApp(tk.Tk):
                             await self._preparar_aba_flow_async(aba, imagens, p_texto)
                             return (aba, pasta, modelo_nome, True)
                         except Exception as e:
+                            if self._playwright_driver_fechou(e):
+                                driver_falhou = True
+                                self._log(
+                                    f"  [Aba {tab_i+1}] Driver/Chrome desconectou na preparacao: {e}"
+                                )
+                                _adicionar_driver_falha([pasta])
+                                return (aba, pasta, modelo_nome, False)
                             self._log(
                                 f"  [Aba {tab_i+1}] ✗ Erro na preparação: {e}"
                             )
@@ -3254,6 +3340,11 @@ class MotionHubApp(tk.Tk):
                         _preparar_slot(i, pasta)
                         for i, pasta in enumerate(ciclo_pastas)
                     ])
+                    if driver_falhou:
+                        _adicionar_driver_falha(
+                            list(ciclo_pastas) + list(pastas_sel[fim:])
+                        )
+                        break
 
                     abas_ok = [
                         (aba, pasta, modelo)
@@ -3274,6 +3365,7 @@ class MotionHubApp(tk.Tk):
                     srcs_anteriores = {}
 
                     async def _enviar_aba(aba, pasta, num, total):
+                        nonlocal driver_falhou
                         try:
                             self._log(
                                 f"\n  [Aba {num}/{total}] → {pasta.name}"
@@ -3297,6 +3389,13 @@ class MotionHubApp(tk.Tk):
                                 f"  [Aba {num}/{total}] ✓ Criado!"
                             )
                         except Exception as e:
+                            if self._playwright_driver_fechou(e):
+                                driver_falhou = True
+                                self._log(
+                                    f"  [Aba {num}/{total}] Driver/Chrome desconectou no envio: {e}"
+                                )
+                                _adicionar_driver_falha([pasta])
+                                return
                             self._log(
                                 f"  [Aba {num}/{total}] ✗ Erro: {e}"
                             )
@@ -3313,6 +3412,13 @@ class MotionHubApp(tk.Tk):
                     # Cada aba baixa a imagem que acabou de gerar (a mais recente
                     # na galeria NESTE momento), antes que o próximo ciclo
                     # sobreponha com uma geração nova na mesma aba.
+                    if driver_falhou:
+                        _adicionar_driver_falha(
+                            [pasta for _, pasta, _ in abas_ok]
+                            + list(pastas_sel[fim:])
+                        )
+                        break
+
                     if abas_ok:
                         lote_pendente = [
                             (aba, pasta, posicoes_globais[pasta])
@@ -3347,6 +3453,7 @@ class MotionHubApp(tk.Tk):
                         )
 
                         async def _baixar_ciclo(dl_aba, dl_pasta, pos):
+                            nonlocal driver_falhou
                             self._log(f"  [{pos}] ↓ {dl_pasta.name}")
                             try:
                                 ok_dl = await self._baixar_primeira_galeria_async(
@@ -3358,21 +3465,53 @@ class MotionHubApp(tk.Tk):
                                 if not ok_dl:
                                     erros.append((dl_pasta.name, dl_pasta))
                             except Exception as e:
+                                if self._playwright_driver_fechou(e):
+                                    driver_falhou = True
+                                    self._log(
+                                        f"  [{pos}] Driver/Chrome desconectou no download: {e}"
+                                    )
+                                    _adicionar_driver_falha([dl_pasta])
+                                    return
                                 self._log(f"  [{pos}] ⚠ Falha no download: {e}")
                                 erros.append((dl_pasta.name, dl_pasta))
 
                         await asyncio.gather(*[
                             _baixar_ciclo(a, p, pos) for a, p, pos in lote_pendente
                         ])
+                        if driver_falhou:
+                            salvas = {
+                                p for _, p, pos in lote_pendente
+                                if (p / f"frameNew ({pos}).jpg").exists()
+                            }
+                            _adicionar_driver_falha(
+                                [p for _, p, _ in lote_pendente if p not in salvas]
+                                + list(pastas_sel[fim:])
+                            )
+                            downloads_pendentes.extend([
+                                item for item in lote_pendente
+                                if item[1] in salvas
+                            ])
+                            break
                         downloads_pendentes.extend(lote_pendente)
 
         except Exception as e:
             erro_geral = str(e)
             self._log(f"{prefixo} ✗ Erro geral Playwright: {e}")
-            existentes = {p for _, p in erros}
-            for pasta in pastas_sel:
-                if pasta not in existentes:
-                    erros.append((pasta.name, pasta))
+            if self._playwright_driver_fechou(e):
+                driver_falhou = True
+                salvas = {
+                    p for _, p, pos in downloads_pendentes
+                    if (p / f"frameNew ({pos}).jpg").exists()
+                }
+                _adicionar_driver_falha(
+                    [pasta for pasta in pastas_sel if pasta not in salvas]
+                )
+                erro_geral = None
+            else:
+                existentes = {p for _, p in erros}
+                for pasta in pastas_sel:
+                    if pasta not in existentes:
+                        erros.append((pasta.name, pasta))
 
         itens_revisao = []
         erros_pastas = {p for _, p in erros}
@@ -3391,10 +3530,14 @@ class MotionHubApp(tk.Tk):
                 pastas_adicionadas.add(pasta)
         return {
             "perfil": perfil["name"],
+            "perfil_id": perfil.get("id"),
+            "perfil_port": perfil.get("port"),
             "erros": erros,
             "itens_revisao": itens_revisao,
             "erro_geral": erro_geral,
             "limite_diario_pastas": limite_diario_pastas,
+            "driver_falha_pastas": driver_falha_pastas,
+            "driver_falhou": driver_falhou,
         }
 
     def _mover_falhas_flow(self, erros):
@@ -3516,87 +3659,51 @@ class MotionHubApp(tk.Tk):
     def _preparar_aba_flow(self, page, imagens, prompt_texto):
         raise RuntimeError("Use _preparar_aba_flow_async via asyncio")
 
-    # Seletor CSS exato do botão Enviar/Criar do Google Flow
-    FLOW_SEND_BTN_SEL = (
-        "#__next > div.sc-c7ee1759-1.jhwuTJ "
-        "> div.sc-682f0b3f-1.cLCWIL "
-        "> div > div > div > div "
-        "> div.sc-26b30722-1.kZzgCz "
-        "> div.sc-26b30722-10.eTAJIl "
-        "> button.sc-e8425ea6-0.hOBPaw.sc-d3791a4f-0.sc-d3791a4f-4.sc-26b30722-5.ewGlDn.famhRe.jDvIwb"
-    )
-
-    # Seletor CSS do botão de enviar o prompt (atualizado)
-    FLOW_PROMPT_SEND_BTN_SEL = (
-        "#__next > div.sc-c7ee1759-1.jhwuTJ "
-        "> div.sc-682f0b3f-1.cLCWIL "
-        "> div > div > div > div "
-        "> div.sc-26b30722-1.kZzgCz "
-        "> div.sc-26b30722-10.eTAJIl "
-        "> button.sc-e8425ea6-0.hOBPaw.sc-d3791a4f-0.sc-d3791a4f-4.sc-26b30722-5.ewGlDn.famhRe.jDvIwb"
-    )
-
     async def _clicar_criar_flow_async(self, page):
         """
-        FASE 3 — Clica no botão Enviar/Criar usando o seletor CSS exato
-        capturado via DevTools. Fallback para a toolbar genérica caso o
-        DOM mude.
+        Clica no botão Enviar/Criar pela toolbar genérica.
+        Evita seletores CSS longos/dinâmicos que quebram quando o Flow muda.
         """
         self._log(f"    → Clicando em Criar...")
         try:
-            btn = page.locator(self.FLOW_SEND_BTN_SEL).first
+            toolbar = page.locator("div.sc-26b30722-10").first
+            btn = toolbar.locator("button").last
             await btn.wait_for(state="visible", timeout=8000)
             if await btn.get_attribute("aria-disabled") == "true":
                 raise Exception("botão desabilitado")
             await btn.click()
-            self._log(f"    ✓ Botão Criar clicado (seletor exato)")
+            self._log(f"    ✓ Botão Criar clicado (toolbar genérica)")
             await asyncio.sleep(1.5)
+            return True
         except Exception as e1:
-            self._log(f"    ~ seletor exato falhou ({e1}), tentando toolbar genérica...")
-            try:
-                toolbar = page.locator("div.sc-26b30722-10").first
-                btn2 = toolbar.locator("button").last
-                await btn2.wait_for(state="visible", timeout=8000)
-                if await btn2.get_attribute("aria-disabled") == "true":
-                    raise Exception("botão desabilitado")
-                await btn2.click()
-                self._log(f"    ✓ Botão Criar clicado (toolbar genérica)")
-                await asyncio.sleep(1.5)
-            except Exception as e2:
-                self._log(f"    ~ toolbar falhou ({e2}), tentando fallback JS...")
-                clicado = await page.evaluate("""
-                    () => {
-                        const exact = document.querySelector(
-                            '#__next > div.sc-c7ee1759-1.jhwuTJ'
-                            + ' > div.sc-682f0b3f-1.cLCWIL'
-                            + ' > div > div > div > div'
-                            + ' > div.sc-26b30722-1.kZzgCz'
-                            + ' > div.sc-26b30722-10.eTAJIl'
-                            + ' > button.sc-e8425ea6-0.hOBPaw.sc-d3791a4f-0.sc-d3791a4f-4.sc-26b30722-5.ewGlDn.famhRe.jDvIwb'
-                        );
-                        if (exact && exact.getAttribute('aria-disabled') !== 'true') {
-                            exact.click(); return 'ok-exact';
+            self._log(f"    ~ toolbar falhou ({e1}), tentando fallback JS...")
+            clicado = await page.evaluate("""
+                () => {
+                    const toolbar = document.querySelector('div.sc-26b30722-10');
+                    if (toolbar) {
+                        const btns = [...toolbar.querySelectorAll('button')]
+                            .filter(b => b.getAttribute('aria-disabled') !== 'true');
+                        if (btns.length) {
+                            btns[btns.length - 1].click();
+                            return 'ok-toolbar';
                         }
-                        const toolbar = document.querySelector('div.sc-26b30722-10');
-                        if (toolbar) {
-                            const btns = [...toolbar.querySelectorAll('button')]
-                                .filter(b => b.getAttribute('aria-disabled') !== 'true');
-                            if (btns.length) { btns[btns.length - 1].click(); return 'ok-toolbar'; }
-                        }
-                        for (const b of document.querySelectorAll('button')) {
-                            const txt = b.textContent.trim();
-                            if ((txt === 'Criar' || txt === 'Create' || txt === 'Send') && b.getAttribute('aria-disabled') !== 'true') {
-                                b.click(); return 'ok-text';
-                            }
-                        }
-                        return 'not-found';
                     }
-                """)
-                if clicado == 'not-found':
-                    self._log(f"    ⚠ Botão Criar não encontrado")
-                else:
-                    self._log(f"    ✓ Botão Criar clicado (fallback: {clicado})")
-                await asyncio.sleep(1.5)
+                    for (const b of document.querySelectorAll('button')) {
+                        const txt = b.textContent.trim();
+                        if ((txt === 'Criar' || txt === 'Create' || txt === 'Send') &&
+                                b.getAttribute('aria-disabled') !== 'true') {
+                            b.click();
+                            return 'ok-text';
+                        }
+                    }
+                    return 'not-found';
+                }
+            """)
+            if clicado == 'not-found':
+                raise RuntimeError("Botão Criar não encontrado")
+            self._log(f"    ✓ Botão Criar clicado (fallback: {clicado})")
+            await asyncio.sleep(1.5)
+            return True
 
     def _clicar_criar_flow(self, page):
         raise RuntimeError("Use _clicar_criar_flow_async via asyncio")
@@ -3608,11 +3715,10 @@ class MotionHubApp(tk.Tk):
     async def _obter_src_primeira_galeria_async(
             self, page, timeout_ms=15000, diferente_de=None):
         """
-        Faz polling no src da primeira imagem da galeria até encontrar um
+        Faz polling no src da primeira imagem visível da galeria até encontrar um
         valor (e, se 'diferente_de' for passado, até que o src mude em
         relação ao valor anterior — ou seja, até a nova geração substituir
-        a miniatura antiga). Mesma lógica usada para vídeos no Motion
-        (_motion_obter_video_src_async), aplicada a imagens.
+        a miniatura antiga).
         """
         IMG_SEL = (
             "#__next > div.sc-c7ee1759-1.jhwuTJ "
@@ -3625,11 +3731,20 @@ class MotionHubApp(tk.Tk):
         img_el = page.locator(IMG_SEL).first
         limite = time.monotonic() + (timeout_ms / 1000)
         while time.monotonic() < limite:
+            src = None
             try:
                 await img_el.wait_for(state="visible", timeout=3000)
                 src = await img_el.get_attribute("src")
-                if src and (not diferente_de or src != diferente_de):
-                    return src
+            except Exception:
+                pass
+            if src and (not diferente_de or src != diferente_de):
+                return src
+
+            try:
+                srcs = await self._obter_srcs_galeria_visiveis_async(page)
+                for candidato in srcs:
+                    if candidato and (not diferente_de or candidato != diferente_de):
+                        return candidato
             except Exception:
                 pass
             await asyncio.sleep(1)
@@ -5900,14 +6015,6 @@ class MotionHubApp(tk.Tk):
     async def _fotos_baixar_e_salvar_pronto_async(
             self, page, foto_orig: Path, pos: int, fazer_backup: bool,
             nome_modelo: str = None, src_anterior=None):
-        IMG_SEL = (
-            "#__next > div.sc-c7ee1759-1.jhwuTJ "
-            "> div.sc-682f0b3f-0.iPxPxr "
-            "> div.sc-e4f4e472-0.iUuqJB "
-            "> div > div > div > div.sc-888a6226-2.iyGxUz "
-            "> div > div "
-            "> div:nth-child(1) > div > div > span > div > div > div > div > span > div > a > img"
-        )
         TODAS_MIDIAS_SEL = (
             "#__next > div.sc-c7ee1759-1.jhwuTJ "
             "> div.sc-8d642504-0.hMSKOY "
@@ -5928,14 +6035,9 @@ class MotionHubApp(tk.Tk):
                 self._log("    ⚠ Falha de geração detectada; marcando para refazer.")
                 return None
 
-            if src_anterior:
-                src = await self._obter_src_primeira_galeria_async(
-                    page, timeout_ms=60000, diferente_de=src_anterior
-                )
-            else:
-                img_el = page.locator(IMG_SEL).first
-                await img_el.wait_for(state="visible", timeout=15000)
-                src = await img_el.get_attribute("src")
+            src = await self._obter_src_primeira_galeria_async(
+                page, timeout_ms=60000, diferente_de=src_anterior
+            )
 
             if not src:
                 self._log("    \u26a0 Sem src na imagem gerada")
@@ -6477,40 +6579,228 @@ class MotionHubApp(tk.Tk):
             self._rev_mostrar(self._revisao_idx)
         except Exception:
             pass
-        messagebox.showinfo(
-            "Edicao",
-            f"Edicao concluida!\nArquivo substituido: {destino.name}"
+        try:
+            self.notebook.select(self.notebook.index(self._revisao_frame))
+        except Exception:
+            pass
+        try:
+            self.bell()
+        except Exception:
+            pass
+
+    def _rev_finalizar_regeneracao(self, item, destino):
+        if not destino:
+            item["erro"] = True
+            try:
+                idx = self._revisao_itens.index(item)
+                self._rev_mostrar(idx)
+            except Exception:
+                pass
+            return
+
+        destino = Path(destino)
+        item["arquivo"] = destino
+        item["regenerado"] = True
+        item["gerado_em"] = time.time()
+        item["erro"] = False
+        try:
+            self._revisao_itens.sort(key=self._revisao_sort_key)
+            self._revisao_idx = self._revisao_itens.index(item)
+            if self._revisao_idx < len(self._revisao_vars):
+                self._revisao_vars[self._revisao_idx].set(False)
+            self._rev_mostrar(self._revisao_idx)
+        except Exception:
+            pass
+
+    def _float_var(self, var, padrao):
+        try:
+            return float(var.get())
+        except Exception:
+            return float(padrao)
+
+    async def _rev_processar_edicao_pagina_async(
+            self, page, arquivo: Path, prompt: str, origem="video"):
+        """Executa uma edição em uma aba Flow já preparada."""
+        CAMPO = '[data-slate-editor="true"]'
+
+        self._log(f"   → [1] Enviando {arquivo.name} para Uploads...")
+        await self._upload_arquivo_para_galeria_async(page, str(arquivo))
+        self._log("   ✓ Upload concluído")
+
+        self._log("   ⏳ [2] Aguardando 15 s para a imagem carregar...")
+        await asyncio.sleep(15)
+
+        self._log("   → [3] Selecionando imagem enviada...")
+        await self._selecionar_upload_edicao_async(page)
+
+        self._log("   → [4] Inserindo prompt de edição...")
+        await page.wait_for_selector(CAMPO, timeout=10000)
+        campo = page.locator(CAMPO).first
+        await campo.click()
+        await asyncio.sleep(0.2)
+        await page.keyboard.press("Control+A")
+        await page.keyboard.press("Backspace")
+        await asyncio.sleep(0.2)
+        await self._colar_prompt_async(page, prompt)
+        await asyncio.sleep(0.3)
+
+        src_anterior = None
+        try:
+            src_anterior = await self._obter_src_primeira_galeria_async(
+                page, timeout_ms=3000
+            )
+        except Exception:
+            pass
+
+        self._log("   → [5] Clicando em Enviar...")
+        await self._clicar_criar_flow_async(page)
+        self._log("   ✓ Enviado ao Flow!")
+
+        self._log("   → Removendo upload selecionado com Delete...")
+        try:
+            await page.keyboard.press("Delete")
+            await asyncio.sleep(0.5)
+            self._log("   ✓ Upload removido")
+        except Exception as e:
+            self._log(f"   ⚠ Não foi possível remover o upload com Delete: {e}")
+
+        try:
+            send_interval = float(self.opt_send_interval.get())
+        except Exception:
+            send_interval = 10.0
+        self._log(f"   ⏳ Aguardando {send_interval:g}s antes de baixar...")
+        await asyncio.sleep(send_interval)
+
+        self._log("   → [6] Baixando imagem gerada...")
+        pasta_destino = arquivo.parent
+        ok_baixou = await self._baixar_primeira_galeria_async(
+            page, pasta_destino, src_anterior=src_anterior,
+            destino=arquivo,
+            deletar_baixada=True,
+            contexto_delete=f"imagem editada da revisao/{origem}"
+        )
+        if ok_baixou:
+            self._log("   ✓ Imagem baixada com sucesso")
+            return arquivo
+        self._log("   ⚠ Não foi possível baixar a imagem gerada")
+        return None
+
+    async def _rev_processar_video_pagina_async(self, page, entrada):
+        item = entrada["item"]
+        pasta = Path(entrada["pasta"])
+        prompt_texto = entrada["prompt"]
+        pos = int(item.get("pos") or entrada.get("pos") or 1)
+        frame_path = pasta / "frameog.jpg"
+        if not frame_path.exists():
+            raise RuntimeError(f"frameog.jpg não encontrado em {pasta.name}")
+
+        refs_dir = pasta / "_refs"
+        exts_img = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+        if refs_dir.is_dir():
+            refs = sorted(
+                str(f) for f in refs_dir.iterdir()
+                if f.suffix.lower() in exts_img
+            )
+            modelo_nome = None
+        else:
+            modelo_nome = self._detectar_modelo_pasta(pasta.name)
+            dados = self.modelos.get(modelo_nome, {}) if modelo_nome else {}
+            refs = []
+            for i in range(1, 3):
+                fp = dados.get(f"foto{i}", "").strip()
+                if fp and os.path.isfile(fp):
+                    refs.append(fp)
+
+        refs = refs[:2]
+        if len(refs) < 2:
+            raise RuntimeError(f"{pasta.name}: precisa de 2 referências válidas.")
+
+        self._log(f"   → Video/refazer: {pasta.name}")
+        await self._preparar_aba_flow_async(
+            page, refs + [str(frame_path)], prompt_texto
+        )
+
+        delay_img = self._float_var(self.opt_delay, 10.0)
+        self._log(f"   ⏳ Aguardando {delay_img:g}s para imagens carregarem...")
+        await asyncio.sleep(delay_img)
+
+        try:
+            src_anterior = await self._obter_src_primeira_galeria_async(
+                page, timeout_ms=3000
+            )
+        except Exception:
+            src_anterior = None
+
+        await self._selecionar_todos_uploads_para_prompt_async(page)
+        await self._clicar_criar_flow_async(page)
+        await self._deletar_ultima_imagem_uploads_flow_async(page)
+
+        cycle_interval = self._float_var(self.opt_cycle_interval, 60.0)
+        self._log(f"   ⏳ Aguardando {cycle_interval:g}s para gerar...")
+        await asyncio.sleep(cycle_interval)
+
+        ok = await self._baixar_primeira_galeria_async(
+            page, pasta, pos,
+            src_anterior=src_anterior,
+            deletar_baixada=True,
+            contexto_delete=f"video {pasta.name}"
+        )
+        return pasta / f"frameNew ({pos}).jpg" if ok else None
+
+    async def _rev_processar_foto_pagina_async(self, page, entrada):
+        item = entrada["item"]
+        foto = Path(entrada["foto"])
+        nome_mod = entrada.get("nome_modelo")
+        refs = list(entrada.get("refs") or [])
+        prompt_texto = entrada["prompt"]
+
+        label = foto.name + (f" [{nome_mod}]" if nome_mod else "")
+        self._log(f"   → Foto/refazer: {label}")
+        await self._fotos_preparar_aba_async(
+            page, str(foto), prompt_texto, fotos_ref=refs
+        )
+
+        delay_img = self._float_var(self.fotos_delay, 10.0)
+        self._log(f"   ⏳ Aguardando {delay_img:g}s para imagens carregarem...")
+        await asyncio.sleep(delay_img)
+
+        try:
+            src_anterior = await self._obter_src_primeira_galeria_async(
+                page, timeout_ms=3000
+            )
+        except Exception:
+            src_anterior = None
+
+        await self._selecionar_todos_uploads_para_prompt_async(page)
+        await self._clicar_criar_flow_async(page)
+        await self._deletar_ultima_imagem_uploads_flow_async(page)
+
+        cycle_interval = self._float_var(self.fotos_cycle_interval, 60.0)
+        self._log(f"   ⏳ Aguardando {cycle_interval:g}s para gerar...")
+        await asyncio.sleep(cycle_interval)
+
+        return await self._fotos_baixar_e_salvar_pronto_async(
+            page, foto, int(item.get("pos") or 1), False, nome_mod,
+            src_anterior=src_anterior
         )
 
     async def _rev_enviar_edicao_async(
-            self, arquivo: Path, prompt: str, origem="video"):
+            self, arquivo: Path, prompt: str, origem="video", perfil=None):
         """
         Fluxo de edição de uma única imagem na aba Revisão (tecla E).
 
         Sequência correta:
-        1. Reutiliza uma aba existente do Flow no perfil escolhido
-        2. Envia 'arquivo'
-        3. Limpa o editor e cola o prompt próprio de edição
-        4. Clica em Enviar
-        5. Baixa a imagem gerada
+        1. Reutiliza/abre uma aba Flow do perfil escolhido
+        2. Envia a imagem para Uploads
+        3. Aguarda o intervalo e seleciona a imagem sem clicar no botão Uploads
+        4. Cola o prompt próprio de edição
+        5. Clica em Enviar, baixa e apaga a imagem gerada
         """
-        # ── Seletores ─────────────────────────────────────────────────────────
-        ENVIAR_BTN_SEL = (
-            "#__next > div.sc-c7ee1759-1.jhwuTJ "
-            "> div.sc-682f0b3f-1.cLCWIL "
-            "> div > div > div > div "
-            "> div.sc-26b30722-1.kZzgCz "
-            "> div.sc-26b30722-10.eTAJIl "
-            "> button.sc-e8425ea6-0.hOBPaw.sc-d3791a4f-0.sc-d3791a4f-4"
-            ".sc-26b30722-5.ewGlDn.famhRe.jDvIwb"
-        )
-
-        # ── Conectar ──────────────────────────────────────────────────────────
-        perfis = self._flow_profiles_obter()
-        perfis_ativos = [p for p in perfis if p.get("active")]
-        if not perfis_ativos:
+        perfis_ativos = [p for p in self._flow_profiles_obter() if p.get("active")]
+        if perfil is None:
+            perfil = perfis_ativos[0] if perfis_ativos else None
+        if not perfil:
             raise RuntimeError("Nenhum perfil Flow ativo configurado.")
-        perfil = perfis_ativos[0]
         porta = int(perfil.get("port", 9222))
         self._log(f"   → Conectando ao perfil '{perfil['name']}' (porta {porta})...")
         try:
@@ -6535,15 +6825,8 @@ class MotionHubApp(tk.Tk):
                 page = abas_flow[0]
                 self._log(f"   → Reutilizando aba Flow existente: {page.url[:60]}...")
             else:
-                paginas = [p for p in ctx.pages if not p.is_closed()]
-                if paginas:
-                    page = paginas[-1]
-                    self._log("   → Reutilizando aba existente do perfil para edição...")
-                else:
-                    raise RuntimeError(
-                        "Nenhuma aba existente no perfil Flow para reutilizar. "
-                        "Abra uma aba do Flow nesse perfil e tente novamente."
-                    )
+                page = await ctx.new_page()
+                self._log("   → Abrindo aba Flow para edição...")
                 await page.goto(projeto_url)
                 await page.wait_for_load_state("domcontentloaded", timeout=30000)
                 try:
@@ -6553,84 +6836,9 @@ class MotionHubApp(tk.Tk):
             await self._flow_recarregar_se_erro_inicio_async(
                 page, "revisao"
             )
-
-            # ── FASE 1: Upload ────────────────────────────────────────────────
-            self._log(f"   → [1] Enviando {arquivo.name}...")
-            await self._upload_arquivo_para_galeria_async(page, str(arquivo))
-            self._log("   ✓ Upload concluído")
-
-            # ── FASE 2: Cola o prompt próprio da edição ───────────────────────
-            self._log("   → [2] Inserindo prompt de edição...")
-            CAMPO = '[data-slate-editor="true"]'
-            try:
-                await page.wait_for_selector(CAMPO, timeout=10000)
-                campo = page.locator(CAMPO).first
-                await campo.click()
-                await asyncio.sleep(0.2)
-                await page.keyboard.press("Control+A")
-                await page.keyboard.press("Backspace")
-                await asyncio.sleep(0.2)
-                await self._colar_prompt_async(page, prompt)
-                await asyncio.sleep(0.3)
-                self._log("   ✓ Prompt inserido")
-            except Exception as e:
-                self._log(f"   ⚠ Falha ao inserir prompt: {e}")
-
-            # Captura src atual para detectar nova imagem após geração
-            src_anterior = None
-            try:
-                src_anterior = await self._obter_src_primeira_galeria_async(
-                    page, timeout_ms=3000
-                )
-            except Exception:
-                pass
-
-            # ── FASE 3: Clica em Enviar ───────────────────────────────────────
-            self._log("   → [3] Clicando em Enviar...")
-            enviado = False
-            try:
-                btn_enviar = page.locator(ENVIAR_BTN_SEL).first
-                await btn_enviar.wait_for(state="visible", timeout=8000)
-                await btn_enviar.click()
-                await asyncio.sleep(0.8)
-                self._log("   ✓ Enviado ao Flow!")
-                enviado = True
-            except Exception as e:
-                self._log(f"   ~ Seletor botão Enviar falhou ({e}), tentando fallback...")
-                try:
-                    await self._clicar_criar_flow_async(page)
-                    self._log("   ✓ Enviado ao Flow (fallback)!")
-                    enviado = True
-                except Exception as e2:
-                    self._log(f"   ⚠ Falha ao clicar em Enviar: {e2}")
-
-            if not enviado:
-                raise RuntimeError("Não foi possível clicar em Enviar.")
-
-            # ── FASE 4: Baixa a imagem gerada ────────────────────────────────
-            try:
-                send_interval = float(self.opt_send_interval.get())
-            except Exception:
-                send_interval = 10.0
-            self._log(f"   ⏳ Aguardando {send_interval:g}s antes de baixar...")
-            await asyncio.sleep(send_interval)
-
-            self._log("   → [4] Baixando imagem gerada...")
-            try:
-                pasta_destino = arquivo.parent
-                ok_baixou = await self._baixar_primeira_galeria_async(
-                    page, pasta_destino, src_anterior=src_anterior,
-                    destino=arquivo,
-                    deletar_baixada=True,
-                    contexto_delete=f"imagem editada da revisao/{origem}"
-                )
-                if ok_baixou:
-                    self._log("   ✓ Imagem baixada com sucesso")
-                    return arquivo
-                else:
-                    self._log("   ⚠ Não foi possível baixar a imagem gerada")
-            except Exception as e:
-                self._log(f"   ⚠ Erro ao baixar imagem gerada: {e}")
+            return await self._rev_processar_edicao_pagina_async(
+                page, Path(arquivo), prompt, origem=origem
+            )
 
         return None
 
@@ -6700,10 +6908,8 @@ class MotionHubApp(tk.Tk):
                 f"Refazer {len(marcadas)} imagem(ns)?\n\n{nomes}\n\n"
                 "O arquivo gerado será apagado e o processo será refeito."):
             return
-        # Apaga os frameNew marcados e dispara o reprocessamento
-        pastas_refazer = []
-        fotos_refazer = []
-        edicoes_refazer = []
+        # Apaga os frameNew marcados e monta uma fila unica mista.
+        fila_refazer = []
         ignorados = []
         pastas_vistas = set()
         fotos_vistas = set()
@@ -6713,7 +6919,13 @@ class MotionHubApp(tk.Tk):
                 arquivo = Path(item.get("edicao_arquivo") or item.get("arquivo", ""))
                 prompt = item.get("edicao_prompt", "").strip()
                 if arquivo.exists() and prompt:
-                    edicoes_refazer.append((item, arquivo, prompt, item.get("origem", "video")))
+                    fila_refazer.append({
+                        "tipo": "edicao",
+                        "item": item,
+                        "arquivo": arquivo,
+                        "prompt": prompt,
+                        "origem": item.get("origem", "video"),
+                    })
                 else:
                     ignorados.append(f"{pasta_nome} (edicao pendente sem arquivo/prompt)")
                 continue
@@ -6734,11 +6946,13 @@ class MotionHubApp(tk.Tk):
                     )
                     if chave not in fotos_vistas:
                         fotos_vistas.add(chave)
-                        fotos_refazer.append((
-                            Path(foto_origem),
-                            item.get("nome_modelo"),
-                            list(item.get("refs") or [])
-                        ))
+                        fila_refazer.append({
+                            "tipo": "foto",
+                            "item": item,
+                            "foto": Path(foto_origem),
+                            "nome_modelo": item.get("nome_modelo"),
+                            "refs": list(item.get("refs") or []),
+                        })
                     continue
 
             pasta_trabalho = self._revisao_pasta_trabalho(item)
@@ -6749,7 +6963,11 @@ class MotionHubApp(tk.Tk):
                     chave = str(pasta_trabalho).lower()
                 if chave not in pastas_vistas:
                     pastas_vistas.add(chave)
-                    pastas_refazer.append(pasta_trabalho)
+                    fila_refazer.append({
+                        "tipo": "video",
+                        "item": item,
+                        "pasta": pasta_trabalho,
+                    })
             else:
                 ignorados.append(pasta_nome)
 
@@ -6768,7 +6986,7 @@ class MotionHubApp(tk.Tk):
             )
             return
 
-        if not pastas_refazer and not fotos_refazer and not edicoes_refazer:
+        if not fila_refazer:
             messagebox.showwarning(
                 "Revisao",
                 "Nenhum item marcado pode ser refeito com os dados atuais."
@@ -6776,30 +6994,28 @@ class MotionHubApp(tk.Tk):
             return
 
         p_texto = self.prompt_text.get("1.0", "end").rstrip()
-        if pastas_refazer and not p_texto:
+        fotos_texto = self.fotos_prompt_text.get("1.0", "end").rstrip()
+        if any(entrada["tipo"] == "video" for entrada in fila_refazer) and not p_texto:
             messagebox.showerror(
                 "Erro",
                 "O prompt está vazio. Escreva ou selecione um prompt antes de refazer."
             )
             return
-
-        def _iniciar_refazer_normal():
-            if pastas_refazer:
-                self._log(f"\n🔁 Refazendo {len(pastas_refazer)} pasta(s)...")
-                self._iniciar_flow_com_pastas(pastas_refazer)
-            if fotos_refazer:
-                self._log(f"\nRefazendo {len(fotos_refazer)} foto(s)...")
-                self._iniciar_fotos_com_itens(fotos_refazer)
-
-        if edicoes_refazer:
-            self._log(f"\nRefazendo {len(edicoes_refazer)} edição(ões) pendente(s)...")
-            self._iniciar_edicoes_revisao(
-                edicoes_refazer,
-                ao_finalizar=_iniciar_refazer_normal
-                if (pastas_refazer or fotos_refazer) else None
+        if any(entrada["tipo"] == "foto" for entrada in fila_refazer) and not fotos_texto:
+            messagebox.showerror(
+                "Erro",
+                "O prompt de Fotos está vazio. Escreva ou selecione um prompt antes de refazer."
             )
-        else:
-            _iniciar_refazer_normal()
+            return
+
+        for entrada in fila_refazer:
+            if entrada["tipo"] == "video":
+                entrada["prompt"] = p_texto
+            elif entrada["tipo"] == "foto":
+                entrada["prompt"] = fotos_texto
+
+        self._log(f"\n🔁 Refazendo {len(fila_refazer)} item(ns) marcado(s) em fila mista...")
+        self._iniciar_refazer_misto(fila_refazer)
 
     def _iniciar_flow_com_pastas(self, pastas):
         """Dispara o envio Flow para uma lista específica de pastas (reprocessamento)."""
@@ -6837,30 +7053,299 @@ class MotionHubApp(tk.Tk):
                 )
         threading.Thread(target=_run, daemon=True).start()
 
+    async def _iniciar_refazer_misto_async(self, fila):
+        """Refaz itens de revisão em fila unica, distribuindo por perfis/abas."""
+        perfis_todos = self._flow_perfis_ativos()
+        perfis_abertos = [
+            p for p in perfis_todos
+            if self._flow_porta_respondendo(p.get("port"))
+        ]
+        if len(perfis_abertos) > 1:
+            perfis = perfis_abertos
+            limite_perfis = 0
+            origem_perfis = "abertos"
+        else:
+            perfis = perfis_todos
+            limite_perfis = 0
+            origem_perfis = "ativos"
+        if not perfis:
+            raise RuntimeError("Nenhum perfil Flow ativo configurado.")
+
+        try:
+            flow_abas = max(1, int(self.opt_sends_per_cycle.get()))
+        except Exception:
+            flow_abas = 3
+        try:
+            fotos_abas = max(1, int(self.fotos_sends_per_cycle.get()))
+        except Exception:
+            fotos_abas = flow_abas
+        sends_per_cycle = max(flow_abas, fotos_abas)
+
+        distribuicoes = []
+        for indice, perfil in enumerate(perfis):
+            lote = fila[indice::len(perfis)]
+            if lote:
+                distribuicoes.append((perfil, lote))
+
+        capacidade = max(1, sends_per_cycle) * max(1, len(distribuicoes))
+        self._log("   Refazer marcado: fila mista distribuída.")
+        self._log(
+            f"   Perfis em uso : {len(distribuicoes)} "
+            f"({origem_perfis})"
+            + (f" de {limite_perfis}" if limite_perfis else "")
+        )
+        self._log(f"   Abas por perfil: {sends_per_cycle}")
+        self._log(f"   Simultâneo     : até {capacidade} item(ns)")
+        for perfil, lote in distribuicoes:
+            resumo = {}
+            for entrada in lote:
+                resumo[entrada["tipo"]] = resumo.get(entrada["tipo"], 0) + 1
+            partes = ", ".join(f"{k}:{v}" for k, v in sorted(resumo.items()))
+            self._log(f"   {perfil['name']} (porta {perfil['port']}): {len(lote)} item(ns) [{partes}]")
+
+        await self._flow_garantir_perfis_abertos_juntos_async(
+            [perfil for perfil, _ in distribuicoes]
+        )
+
+        async def _processar_perfil(perfil, lote):
+            porta = int(perfil.get("port", 9222))
+            projeto_url = perfil.get("url") or FLOW_URL
+            prefixo = f"[{perfil['name']}]"
+            async with async_playwright() as pw:
+                browser = await pw.chromium.connect_over_cdp(
+                    f"http://localhost:{porta}", timeout=10000
+                )
+                ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+                abas_flow = self._obter_abas_flow_abertas(ctx, projeto_url)
+                if abas_flow:
+                    self._log(f"{prefixo} Abas Flow reutilizadas: {len(abas_flow)}")
+
+                async def _abrir_aba(slot):
+                    self._log(f"{prefixo} Abrindo aba {slot}...")
+                    nova = await ctx.new_page()
+                    await nova.goto(projeto_url)
+                    await nova.wait_for_load_state("domcontentloaded", timeout=30000)
+                    try:
+                        await nova.wait_for_load_state("networkidle", timeout=30000)
+                    except Exception:
+                        pass
+                    await self._flow_recarregar_se_erro_inicio_async(
+                        nova, f"aba {slot}"
+                    )
+                    return nova
+
+                total_ciclos = (len(lote) + sends_per_cycle - 1) // sends_per_cycle
+                for ciclo_idx in range(total_ciclos):
+                    inicio = ciclo_idx * sends_per_cycle
+                    fim = min(inicio + sends_per_cycle, len(lote))
+                    ciclo = lote[inicio:fim]
+                    n_abas = len(ciclo)
+
+                    while len(abas_flow) < n_abas:
+                        faltam = n_abas - len(abas_flow)
+                        slots = list(range(len(abas_flow) + 1, len(abas_flow) + faltam + 1))
+                        abas_flow.extend(await asyncio.gather(*[
+                            _abrir_aba(slot) for slot in slots
+                        ]))
+
+                    self._log(
+                        f"{prefixo} Ciclo misto {ciclo_idx + 1}/{total_ciclos}: "
+                        f"{n_abas} aba(s)"
+                    )
+
+                    async def _processar_slot(tab_i, entrada):
+                        aba = abas_flow[tab_i]
+                        item = entrada["item"]
+                        tipo = entrada["tipo"]
+                        try:
+                            try:
+                                await self._flow_recarregar_se_erro_inicio_async(
+                                    aba, f"{tipo} {tab_i + 1}"
+                                )
+                            except Exception:
+                                pass
+
+                            if tipo == "edicao":
+                                destino = await self._rev_processar_edicao_pagina_async(
+                                    aba, Path(entrada["arquivo"]),
+                                    entrada["prompt"], origem=entrada.get("origem", "video")
+                                )
+                                self.after(
+                                    0, lambda item=item, destino=destino:
+                                    self._rev_finalizar_edicao(item, destino)
+                                )
+                            elif tipo == "video":
+                                destino = await self._rev_processar_video_pagina_async(
+                                    aba, entrada
+                                )
+                                self.after(
+                                    0, lambda item=item, destino=destino:
+                                    self._rev_finalizar_regeneracao(item, destino)
+                                )
+                            elif tipo == "foto":
+                                destino = await self._rev_processar_foto_pagina_async(
+                                    aba, entrada
+                                )
+                                self.after(
+                                    0, lambda item=item, destino=destino:
+                                    self._rev_finalizar_regeneracao(item, destino)
+                                )
+                        except Exception as exc:
+                            self._log(f"{prefixo} {tipo} ERRO: {exc}")
+                            item["erro"] = True
+                            self.after(
+                                0, lambda item=item: self._rev_finalizar_regeneracao(
+                                    item, None
+                                )
+                            )
+
+                    await asyncio.gather(*[
+                        _processar_slot(i, entrada)
+                        for i, entrada in enumerate(ciclo)
+                    ])
+
+        await asyncio.gather(*[
+            _processar_perfil(perfil, lote)
+            for perfil, lote in distribuicoes
+        ])
+
+    def _iniciar_refazer_misto(self, fila):
+        def _run():
+            try:
+                asyncio.run(self._iniciar_refazer_misto_async(fila))
+            except Exception as exc:
+                import traceback
+                self._log(f"Refazer marcado ERRO: {exc}")
+                self._log(traceback.format_exc())
+                self.after(
+                    0, lambda exc=exc: messagebox.showerror(
+                        "Refazer marcadas", str(exc)
+                    )
+                )
+        threading.Thread(target=_run, daemon=True).start()
+
+    async def _iniciar_edicoes_revisao_async(self, edicoes):
+        """Processa edicoes pendentes distribuindo entre perfis e abas."""
+        perfis_todos = self._flow_perfis_ativos()
+        perfis, limite_perfis = self._limitar_perfis_ativos(
+            perfis_todos,
+            getattr(self, "opt_max_parallel_profiles", None),
+            padrao=0
+        )
+        if not perfis:
+            raise RuntimeError("Nenhum perfil Flow ativo configurado.")
+
+        try:
+            sends_per_cycle = max(1, int(self.opt_sends_per_cycle.get()))
+        except Exception:
+            sends_per_cycle = 3
+
+        distribuicoes = []
+        for indice, perfil in enumerate(perfis):
+            lote = edicoes[indice::len(perfis)]
+            if lote:
+                distribuicoes.append((perfil, lote))
+
+        capacidade = max(1, sends_per_cycle) * max(1, len(distribuicoes))
+        self._log("   Edições: distribuindo em multiplos perfis...")
+        self._log(f"   Perfis em uso : {len(distribuicoes)}" + (f" de {limite_perfis}" if limite_perfis else ""))
+        self._log(f"   Abas por perfil: {sends_per_cycle}")
+        self._log(f"   Edições simult.: até {capacidade}")
+        for perfil, lote in distribuicoes:
+            self._log(f"   {perfil['name']} (porta {perfil['port']}): {len(lote)} edição(ões)")
+
+        await self._flow_garantir_perfis_abertos_juntos_async(
+            [perfil for perfil, _ in distribuicoes]
+        )
+
+        async def _processar_perfil(perfil, lote):
+            porta = int(perfil.get("port", 9222))
+            projeto_url = perfil.get("url") or FLOW_URL
+            prefixo = f"[{perfil['name']}]"
+            async with async_playwright() as pw:
+                browser = await pw.chromium.connect_over_cdp(
+                    f"http://localhost:{porta}", timeout=10000
+                )
+                ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+                abas_flow = self._obter_abas_flow_abertas(ctx, projeto_url)
+
+                async def _abrir_aba(slot):
+                    self._log(f"{prefixo} Abrindo aba edição {slot}...")
+                    nova = await ctx.new_page()
+                    await nova.goto(projeto_url)
+                    await nova.wait_for_load_state("domcontentloaded", timeout=30000)
+                    try:
+                        await nova.wait_for_load_state("networkidle", timeout=30000)
+                    except Exception:
+                        pass
+                    return nova
+
+                total_ciclos = (len(lote) + sends_per_cycle - 1) // sends_per_cycle
+                for ciclo_idx in range(total_ciclos):
+                    inicio = ciclo_idx * sends_per_cycle
+                    fim = min(inicio + sends_per_cycle, len(lote))
+                    ciclo = lote[inicio:fim]
+                    n_abas = len(ciclo)
+                    while len(abas_flow) < n_abas:
+                        faltam = n_abas - len(abas_flow)
+                        slots = list(range(len(abas_flow) + 1, len(abas_flow) + faltam + 1))
+                        abas_flow.extend(await asyncio.gather(*[
+                            _abrir_aba(slot) for slot in slots
+                        ]))
+
+                    self._log(
+                        f"{prefixo} Ciclo edição {ciclo_idx + 1}/{total_ciclos}: "
+                        f"{n_abas} aba(s)"
+                    )
+
+                    async def _processar_slot(tab_i, entrada):
+                        item, arquivo, prompt, origem = entrada
+                        aba = abas_flow[tab_i]
+                        try:
+                            await self._flow_recarregar_se_erro_inicio_async(
+                                aba, f"edição {tab_i + 1}"
+                            )
+                            destino = await self._rev_processar_edicao_pagina_async(
+                                aba, Path(arquivo), prompt, origem=origem
+                            )
+                            self.after(
+                                0, lambda item=item, destino=destino:
+                                self._rev_finalizar_edicao(item, destino)
+                            )
+                        except Exception as exc:
+                            self._log(f"Edição pendente ERRO: {exc}")
+                            item["erro"] = True
+                            self.after(
+                                0, lambda exc=exc: messagebox.showerror(
+                                    "Edição", str(exc)
+                                )
+                            )
+
+                    await asyncio.gather(*[
+                        _processar_slot(i, entrada)
+                        for i, entrada in enumerate(ciclo)
+                    ])
+
+        await asyncio.gather(*[
+            _processar_perfil(perfil, lote)
+            for perfil, lote in distribuicoes
+        ])
+
     def _iniciar_edicoes_revisao(self, edicoes, ao_finalizar=None):
         """Dispara edicoes pendentes marcadas na Revisao."""
         def _run():
-            for item, arquivo, prompt, origem in edicoes:
-                try:
-                    destino = asyncio.run(
-                        self._rev_enviar_edicao_async(
-                            Path(arquivo), prompt, origem=origem
-                        )
-                    )
-                    self.after(
-                        0, lambda item=item, destino=destino:
-                        self._rev_finalizar_edicao(item, destino)
-                    )
-                except Exception as exc:
-                    self._log(f"Edição pendente ERRO: {exc}")
-                    item["erro"] = True
-                    self.after(
-                        0, lambda exc=exc: messagebox.showerror(
-                            "Edição", str(exc)
-                        )
-                    )
-            if ao_finalizar:
-                self.after(0, ao_finalizar)
+            try:
+                asyncio.run(self._iniciar_edicoes_revisao_async(edicoes))
+            except Exception as exc:
+                import traceback
+                self._log(f"Edição pendente ERRO: {exc}")
+                self._log(traceback.format_exc())
+                self.after(
+                    0, lambda exc=exc: messagebox.showerror("Edição", str(exc))
+                )
+            finally:
+                if ao_finalizar:
+                    self.after(0, ao_finalizar)
         threading.Thread(target=_run, daemon=True).start()
 
     # =========================================================================

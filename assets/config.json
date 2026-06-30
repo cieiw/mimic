@@ -1,7 +1,7 @@
 {
-  "window_geometry": "1920x1009+-23+62",
+  "window_geometry": "1920x1009+-769+324",
   "window_state": "normal",
-  "last_tab": 4,
+  "last_tab": 0,
   "auto_modelo": "#1Aurora",
   "flow_modelo": "exemplo2",
   "flow_prompt_ativo": "Padrão",
@@ -9,7 +9,7 @@
   "flow_delay": "15",
   "flow_prompt_delay": "10",
   "flow_cycle_interval": "40",
-  "flow_sends_per_cycle": "1",
+  "flow_sends_per_cycle": "2",
   "flow_send_interval": "15",
   "flow_profiles": [
     {
@@ -230,8 +230,8 @@
   "fotos_delay": "20",
   "fotos_cycle_interval": "40",
   "motion_creditos_last_opened_ts": 1782538622.6487005,
-  "fotos_max_parallel_profiles": "2",
-  "flow_max_parallel_profiles": "1",
+  "fotos_max_parallel_profiles": "3",
+  "flow_max_parallel_profiles": "2",
   "seletores": {
     "uploads_btn": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=3515ad84-3fbf-4a3c-9a81-e4d920801317",
     "upload_container": "#__next > div:nth-child(1) > div:nth-child(4) > div:nth-child(2) > div > div > div > div:nth-child(2) > div:nth-child(1) > div",
@@ -241,5 +241,6 @@
     "limite_diario": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=b894ea67-103b-4f4f-bdc7-64237c9904c4"
   },
   "fotos_aguardar_abrir": "30",
-  "flow_erro_inicio_palavras": "Application error\nclient-side exception\nclient side exception"
+  "flow_erro_inicio_palavras": "Application error\nclient-side exception\nclient side exception",
+  "flow_aguardar_abrir": "20"
 }
