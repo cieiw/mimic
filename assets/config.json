@@ -1,5 +1,5 @@
 {
-  "window_geometry": "1920x1009+36+112",
+  "window_geometry": "1920x1009+-23+62",
   "window_state": "normal",
   "last_tab": 4,
   "auto_modelo": "#1Aurora",
@@ -18,7 +18,9 @@
       "port": "9222",
       "url": "https://labs.google/fx/pt/tools/flow/project/8d879eae-565f-4123-b604-1d963adf79c9",
       "session": "C:\\Temp\\chrome_motionhub",
-      "active": true
+      "active": false,
+      "credit_blocked_until": 1782855668.099351,
+      "credit_blocked_reason": "limite_diario"
     },
     {
       "id": "perfil_2",
@@ -228,14 +230,16 @@
   "fotos_delay": "20",
   "fotos_cycle_interval": "40",
   "motion_creditos_last_opened_ts": 1782538622.6487005,
-  "fotos_max_parallel_profiles": "4",
+  "fotos_max_parallel_profiles": "2",
   "flow_max_parallel_profiles": "1",
   "seletores": {
     "uploads_btn": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=3515ad84-3fbf-4a3c-9a81-e4d920801317",
     "upload_container": "#__next > div:nth-child(1) > div:nth-child(4) > div:nth-child(2) > div > div > div > div:nth-child(2) > div:nth-child(1) > div",
     "upload_img3": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=e75dc9b9-e338-4988-9bf3-dfb00e6129f7",
     "upload_img2": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=4f1d394d-0aba-401b-886d-7d25d28ed1cc",
-    "upload_img1": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=3515ad84-3fbf-4a3c-9a81-e4d920801317"
+    "upload_img1": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=3515ad84-3fbf-4a3c-9a81-e4d920801317",
+    "limite_diario": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=b894ea67-103b-4f4f-bdc7-64237c9904c4"
   },
-  "fotos_aguardar_abrir": "30"
+  "fotos_aguardar_abrir": "30",
+  "flow_erro_inicio_palavras": "Application error\nclient-side exception\nclient side exception"
 }

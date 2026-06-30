@@ -777,6 +777,7 @@ class MotionHubApp(tk.Tk):
 
         self._build_ui()
         self._restore_state()
+        self.after(60000, self._flow_agendar_refresh_creditos)
 
     def _on_configure(self, event):
         if event.widget == self:
@@ -2162,10 +2163,21 @@ class MotionHubApp(tk.Tk):
             perfis = self._flow_profiles_padrao()
             self.config["flow_profiles"] = perfis
         normalizados = []
+        mudou_bloqueio = False
+        agora = time.time()
         for indice, perfil in enumerate(perfis, 1):
             if not isinstance(perfil, dict):
                 continue
-            normalizados.append({
+            try:
+                bloqueado_ate = float(perfil.get("credit_blocked_until") or 0)
+            except Exception:
+                bloqueado_ate = 0.0
+            ativo = bool(perfil.get("active", True))
+            if bloqueado_ate and bloqueado_ate <= agora:
+                ativo = True
+                bloqueado_ate = 0.0
+                mudou_bloqueio = True
+            normalizado = {
                 "id": str(perfil.get("id") or f"perfil_{indice}"),
                 "name": str(
                     perfil.get("name") or f"Perfil {indice}"
@@ -2181,15 +2193,97 @@ class MotionHubApp(tk.Tk):
                         else f"{CHROME_SESSION}_{indice}"
                     )
                 ),
-                "active": bool(perfil.get("active", True)),
-            })
+                "active": ativo,
+            }
+            if bloqueado_ate:
+                normalizado["credit_blocked_until"] = bloqueado_ate
+                normalizado["credit_blocked_reason"] = str(
+                    perfil.get("credit_blocked_reason")
+                    or "limite_diario"
+                )
+            normalizados.append(normalizado)
         if not normalizados:
             normalizados = self._flow_profiles_padrao()
         self.config["flow_profiles"] = normalizados
+        if mudou_bloqueio:
+            self._flow_profiles_salvar_config()
         return normalizados
 
     def _flow_profiles_salvar_config(self):
         save_json(CONFIG_FILE, self.config)
+
+    def _flow_profile_bloqueado_ate(self, perfil):
+        try:
+            bloqueado_ate = float(perfil.get("credit_blocked_until") or 0)
+        except Exception:
+            return 0.0
+        return bloqueado_ate if bloqueado_ate > time.time() else 0.0
+
+    def _flow_profile_status_creditos(self, perfil):
+        bloqueado_ate = self._flow_profile_bloqueado_ate(perfil)
+        if bloqueado_ate:
+            restante = max(0, int(bloqueado_ate - time.time()))
+            horas = restante // 3600
+            minutos = (restante % 3600) // 60
+            return "yellow", f"sem creditos ({horas:02d}h{minutos:02d})"
+        if perfil.get("active"):
+            return "green", "creditos ok"
+        return "gray", "desativado"
+
+    def _flow_marcar_perfil_sem_creditos(self, perfil):
+        perfis = self._flow_profiles_obter()
+        alvo_id = str(perfil.get("id") or "")
+        alvo_porta = str(perfil.get("port") or "")
+        bloqueado_ate = time.time() + 24 * 60 * 60
+        nome = perfil.get("name", "Perfil")
+        for item in perfis:
+            if (
+                (alvo_id and str(item.get("id")) == alvo_id)
+                or (alvo_porta and str(item.get("port")) == alvo_porta)
+            ):
+                item["active"] = False
+                item["credit_blocked_until"] = bloqueado_ate
+                item["credit_blocked_reason"] = "limite_diario"
+                nome = item.get("name", nome)
+                break
+        self.config["flow_profiles"] = perfis
+        self._flow_profiles_salvar_config()
+        self._log(
+            f"  ⚠ {nome}: limite diario detectado; perfil pausado por 24h."
+        )
+        try:
+            self.after(0, self._flow_profiles_carregar)
+        except Exception:
+            pass
+
+    def _flow_agendar_refresh_creditos(self):
+        try:
+            antes = json.dumps(
+                self.config.get("flow_profiles", []),
+                sort_keys=True,
+                default=str
+            )
+            tinha_bloqueio = any(
+                self._flow_profile_bloqueado_ate(p)
+                for p in self.config.get("flow_profiles", [])
+                if isinstance(p, dict)
+            )
+            self._flow_profiles_obter()
+            depois = json.dumps(
+                self.config.get("flow_profiles", []),
+                sort_keys=True,
+                default=str
+            )
+            tem_bloqueio = any(
+                self._flow_profile_bloqueado_ate(p)
+                for p in self.config.get("flow_profiles", [])
+                if isinstance(p, dict)
+            )
+            if hasattr(self, "_flow_profiles_list_frame") and (tinha_bloqueio or tem_bloqueio or antes != depois):
+                self._flow_profiles_carregar(self._flow_profile_indice() or 0)
+            self.after(60000, self._flow_agendar_refresh_creditos)
+        except Exception:
+            self.after(60000, self._flow_agendar_refresh_creditos)
 
     def _flow_profiles_carregar(self, selecionar=0):
         self.flow_profiles_listbox.delete(0, "end")
@@ -2206,21 +2300,33 @@ class MotionHubApp(tk.Tk):
         for indice, perfil in enumerate(perfis):
             var = tk.BooleanVar(value=perfil["active"])
             self._flow_profile_check_vars[indice] = var
+            status_cor, status_txt = self._flow_profile_status_creditos(perfil)
+            dot_cor = {
+                "green": "#22c55e",
+                "yellow": "#eab308",
+                "gray": "#6b7280",
+            }.get(status_cor, "#6b7280")
 
             if hasattr(self, "_flow_profiles_list_frame"):
                 row = tk.Frame(self._flow_profiles_list_frame, bg=C["BG3"], cursor="hand2")
                 row.pack(fill="x", pady=0)
                 self._flow_profile_row_frames[indice] = row
 
+                dot = tk.Label(
+                    row, text="●", bg=C["BG3"], fg=dot_cor,
+                    font=("Segoe UI", 8), cursor="hand2"
+                )
+                dot.pack(side="left", padx=(5, 0))
+
                 def _toggle_profile(i=indice, v=var):
                     self._flow_profile_toggle_active(i, v.get())
                     self._flow_profile_selecionar_linha(i)
                 cb = ttk.Checkbutton(row, variable=var, command=_toggle_profile)
-                cb.pack(side="left", padx=(5, 2))
+                cb.pack(side="left", padx=(2, 2))
 
                 lbl = tk.Label(
                     row,
-                    text=f"{perfil['name']}  |  {perfil['port']}",
+                    text=f"{perfil['name']}  |  {perfil['port']}  |  {status_txt}",
                     bg=C["BG3"], fg=C["FG"], font=("Consolas", 8),
                     anchor="w", cursor="hand2"
                 )
@@ -2228,12 +2334,12 @@ class MotionHubApp(tk.Tk):
 
                 def _select_row(e, i=indice):
                     self._flow_profile_selecionar_linha(i)
-                for w in (row, lbl):
+                for w in (row, dot, lbl):
                     w.bind("<Button-1>", _select_row)
 
             self.flow_profiles_listbox.insert(
                 "end",
-                f"{'✓' if perfil['active'] else ' '} {perfil['name']} | porta {perfil['port']}"
+                f"{'✓' if perfil['active'] else ' '} {perfil['name']} | porta {perfil['port']} | {status_txt}"
             )
 
         if perfis:
@@ -2268,19 +2374,14 @@ class MotionHubApp(tk.Tk):
         if indice is None or not (0 <= indice < len(perfis)):
             return
         perfis[indice]["active"] = bool(ativo)
+        if ativo:
+            perfis[indice].pop("credit_blocked_until", None)
+            perfis[indice].pop("credit_blocked_reason", None)
         self.config["flow_profiles"] = perfis
         self._flow_profiles_salvar_config()
-        self.flow_profiles_listbox.delete(indice)
-        marcador = "✓" if ativo else " "
-        perfil = perfis[indice]
-        self.flow_profiles_listbox.insert(
-            indice, f"[{marcador}] {perfil['name']} | porta {perfil['port']}"
-        )
-        self.flow_profiles_listbox.selection_clear(0, "end")
-        self.flow_profiles_listbox.selection_set(indice)
-        self.flow_profiles_listbox.activate(indice)
+        self._flow_profiles_carregar(indice)
         self.flow_profile_active_var.set(bool(ativo))
-        self._log(f"Perfil Flow {'ativado' if ativo else 'desativado'}: {perfil['name']}")
+        self._log(f"Perfil Flow {'ativado' if ativo else 'desativado'}: {perfis[indice]['name']}")
 
     def _flow_profile_indice(self):
         selecao = self.flow_profiles_listbox.curselection()
@@ -2341,6 +2442,9 @@ class MotionHubApp(tk.Tk):
             "url": url,
             "active": self.flow_profile_active_var.get(),
         })
+        if self.flow_profile_active_var.get():
+            perfis[indice].pop("credit_blocked_until", None)
+            perfis[indice].pop("credit_blocked_reason", None)
         self.config["flow_profiles"] = perfis
         self._flow_profiles_salvar_config()
         self._flow_profiles_carregar(indice)
@@ -2733,8 +2837,15 @@ class MotionHubApp(tk.Tk):
             )
 
     def _enviar_flow_thread(self):
+        if getattr(self, "_flow_enviando", False):
+            messagebox.showwarning("Flow", "Ja existe um envio Flow em andamento.")
+            return
+        self._flow_enviando = True
         def _run():
-            asyncio.run(self._enviar_flow_async())
+            try:
+                asyncio.run(self._enviar_flow_async())
+            finally:
+                self._flow_enviando = False
         threading.Thread(target=_run, daemon=True).start()
 
     def _obter_abas_flow_abertas(self, context, projeto_url=None):
@@ -2848,59 +2959,104 @@ class MotionHubApp(tk.Tk):
             sends_per_cycle = max(1, int(self.opt_sends_per_cycle.get()))
         except ValueError:
             sends_per_cycle = 3
-
         posicoes = {
             pasta: indice for indice, pasta in enumerate(pastas_sel, 1)
         }
-        distribuicoes = []
-        for indice, perfil in enumerate(perfis):
-            lote = pastas_sel[indice::len(perfis)]
-            if lote:
-                distribuicoes.append((perfil, lote))
-        distribuidas = [
-            pasta for _, lote in distribuicoes for pasta in lote
-        ]
-        if len(set(distribuidas)) != len(distribuidas):
-            self.after(
-                0, lambda: messagebox.showerror(
-                    "Flow",
-                    "Distribuicao abortada: uma pasta caiu em mais de "
-                    "um perfil/aba."
+        resultados = []
+        pendentes = list(pastas_sel)
+        rodada = 0
+        while pendentes:
+            rodada += 1
+            perfis_todos = self._flow_perfis_ativos()
+            perfis, limite_perfis = self._limitar_perfis_ativos(
+                perfis_todos,
+                getattr(self, "opt_max_parallel_profiles", None),
+                padrao=0
+            )
+            if not perfis:
+                for pasta in pendentes:
+                    resultados.append({
+                        "perfil": "(sem perfil)",
+                        "erros": [(Path(pasta).name, Path(pasta))],
+                        "itens_revisao": [],
+                        "erro_geral": "Nenhum perfil Flow com creditos disponivel.",
+                        "limite_diario_pastas": [],
+                    })
+                self._log(
+                    "  ⚠ Sem perfis Flow disponiveis; itens restantes foram para revisão."
                 )
-            )
-            return
+                break
 
-        capacidade_simultanea = max(1, sends_per_cycle) * max(1, len(distribuicoes))
-        self._log("🚀 Iniciando Flow em múltiplos perfis...")
-        self._log(f"   Perfis ativos    : {len(perfis_todos)}")
-        self._log(f"   Perfis em uso    : {len(distribuicoes)}" + (f" de {limite_perfis}" if limite_perfis else ""))
-        self._log(f"   Abas por perfil  : {sends_per_cycle}")
-        self._log(f"   Produção simult. : até {capacidade_simultanea} imagem(ns)")
-        self._log(f"   Pastas totais    : {len(pastas_sel)}")
-        for perfil, lote in distribuicoes:
-            self._log(
-                f"   {perfil['name']} (porta {perfil['port']}): "
-                f"{len(lote)} pasta(s)"
-            )
+            distribuicoes = []
+            for indice, perfil in enumerate(perfis):
+                lote = pendentes[indice::len(perfis)]
+                if lote:
+                    distribuicoes.append((perfil, lote))
+            distribuidas = [
+                pasta for _, lote in distribuicoes for pasta in lote
+            ]
+            if len(set(distribuidas)) != len(distribuidas):
+                self.after(
+                    0, lambda: messagebox.showerror(
+                        "Flow",
+                        "Distribuicao abortada: uma pasta caiu em mais de "
+                        "um perfil/aba."
+                    )
+                )
+                return
 
-        try:
-            await self._flow_garantir_perfis_abertos_juntos_async(
-                [perfil for perfil, _ in distribuicoes]
-            )
-        except Exception as exc:
-            self.after(
-                0, lambda exc=exc: messagebox.showerror("Perfis Flow", str(exc))
-            )
-            return
+            capacidade_simultanea = max(1, sends_per_cycle) * max(1, len(distribuicoes))
+            if rodada == 1:
+                self._log("🚀 Iniciando Flow em múltiplos perfis...")
+                self._log(f"   Perfis ativos    : {len(perfis_todos)}")
+                self._log(f"   Abas por perfil  : {sends_per_cycle}")
+                self._log(f"   Produção simult. : até {capacidade_simultanea} imagem(ns)")
+                self._log(f"   Pastas totais    : {len(pastas_sel)}")
+            else:
+                self._log(
+                    f"\n🔁 Rodada {rodada}: reenviando {len(pendentes)} item(ns) "
+                    "em perfis com credito..."
+                )
+            self._log(f"   Perfis em uso    : {len(distribuicoes)}" + (f" de {limite_perfis}" if limite_perfis else ""))
+            for perfil, lote in distribuicoes:
+                self._log(
+                    f"   {perfil['name']} (porta {perfil['port']}): "
+                    f"{len(lote)} pasta(s)"
+                )
 
-        resultados = await asyncio.gather(*[
-            self._enviar_flow_perfil_async(
-                perfil, lote, p_nome, p_texto,
-                delay_img, send_interval, cycle_interval,
-                sends_per_cycle, posicoes
-            )
-            for perfil, lote in distribuicoes
-        ])
+            try:
+                await self._flow_garantir_perfis_abertos_juntos_async(
+                    [perfil for perfil, _ in distribuicoes]
+                )
+            except Exception as exc:
+                self.after(
+                    0, lambda exc=exc: messagebox.showerror("Perfis Flow", str(exc))
+                )
+                return
+
+            resultados_rodada = await asyncio.gather(*[
+                self._enviar_flow_perfil_async(
+                    perfil, lote, p_nome, p_texto,
+                    delay_img, send_interval, cycle_interval,
+                    sends_per_cycle, posicoes
+                )
+                for perfil, lote in distribuicoes
+            ])
+            resultados.extend(resultados_rodada)
+
+            pendentes = []
+            vistos_pendentes = set()
+            for resultado in resultados_rodada:
+                for pasta in resultado.get("limite_diario_pastas", []):
+                    chave = str(Path(pasta).resolve()).lower()
+                    if chave not in vistos_pendentes:
+                        vistos_pendentes.add(chave)
+                        pendentes.append(Path(pasta))
+            if pendentes:
+                self._log(
+                    f"  ↪ {len(pendentes)} pasta(s) voltaram para a fila "
+                    "por limite diario de perfil."
+                )
 
         erros = []
         itens_revisao = []
@@ -2960,6 +3116,7 @@ class MotionHubApp(tk.Tk):
 
         erros = []  # list[(nome_str, pasta_path)]
         downloads_pendentes = []
+        limite_diario_pastas = []
         erro_geral = None
 
         try:
@@ -2990,6 +3147,12 @@ class MotionHubApp(tk.Tk):
                     self._log(
                         f"   Abas Flow reutilizadas: {len(abas_flow)}"
                     )
+                    await asyncio.gather(*[
+                        self._flow_recarregar_se_erro_inicio_async(
+                            aba, f"aba reutilizada {i + 1}"
+                        )
+                        for i, aba in enumerate(abas_flow)
+                    ])
 
                 # Acumula (aba, pasta, posição_global) de todos os ciclos para download no final
                 for ciclo_idx in range(total_ciclos):
@@ -3010,6 +3173,9 @@ class MotionHubApp(tk.Tk):
                         nova = await context.new_page()
                         await nova.goto(projeto_url)
                         await nova.wait_for_load_state("networkidle", timeout=30000)
+                        await self._flow_recarregar_se_erro_inicio_async(
+                            nova, f"aba {slot}"
+                        )
                         self._log(f"  ✓ Aba {slot} pronta")
                         return nova
 
@@ -3157,6 +3323,25 @@ class MotionHubApp(tk.Tk):
                             f"{cycle_interval:.0f}s para as imagens gerarem..."
                         )
                         await asyncio.sleep(cycle_interval)
+                        limite_abas = await asyncio.gather(*[
+                            self._flow_limite_diario_visivel_async(aba)
+                            for aba, _, _ in abas_ok
+                        ])
+                        if any(limite_abas):
+                            self._log(
+                                f"  ⚠ {prefixo} atingiu o limite diario de gerações."
+                            )
+                            self._flow_marcar_perfil_sem_creditos(perfil)
+                            pendentes_credito = [
+                                pasta for (aba, pasta, _) in abas_ok
+                            ] + list(pastas_sel[fim:])
+                            vistos_credito = set()
+                            for pasta in pendentes_credito:
+                                chave = str(Path(pasta).resolve()).lower()
+                                if chave not in vistos_credito:
+                                    vistos_credito.add(chave)
+                                    limite_diario_pastas.append(Path(pasta))
+                            break
                         self._log(
                             f"\n  📥 Baixando {len(lote_pendente)} imagem(ns) do ciclo {ciclo_num}..."
                         )
@@ -3209,6 +3394,7 @@ class MotionHubApp(tk.Tk):
             "erros": erros,
             "itens_revisao": itens_revisao,
             "erro_geral": erro_geral,
+            "limite_diario_pastas": limite_diario_pastas,
         }
 
     def _mover_falhas_flow(self, erros):
@@ -3454,6 +3640,66 @@ class MotionHubApp(tk.Tk):
             )
         raise RuntimeError("Imagem da galeria não apareceu no seletor de saída.")
 
+    async def _obter_srcs_galeria_visiveis_async(self, page):
+        """Retorna srcs de imagens visíveis na galeria, em ordem visual."""
+        try:
+            srcs = await page.evaluate(
+                """
+                () => {
+                    const imgs = [...document.images]
+                        .map((img) => {
+                            const r = img.getBoundingClientRect();
+                            return {
+                                src: img.currentSrc || img.src || img.getAttribute('src') || '',
+                                top: r.top,
+                                left: r.left,
+                                w: r.width,
+                                h: r.height
+                            };
+                        })
+                        .filter((item) =>
+                            item.src &&
+                            item.w >= 80 && item.h >= 80 &&
+                            item.top >= 0 && item.left >= 0 &&
+                            item.top <= innerHeight && item.left <= innerWidth
+                        )
+                        .sort((a, b) => (a.top - b.top) || (a.left - b.left));
+                    return imgs.map((item) => item.src);
+                }
+                """
+            )
+            unicos = []
+            vistos = set()
+            for src in srcs or []:
+                if src not in vistos:
+                    vistos.add(src)
+                    unicos.append(src)
+            return unicos
+        except Exception:
+            return []
+
+    async def _baixar_src_galeria_async(self, page, src, destino: Path, pasta: Path):
+        """Baixa um src da galeria usando a sessão autenticada."""
+        if not src:
+            return False
+        if src.startswith("/"):
+            src = "https://labs.google" + src
+        self._log(f"    → src: {src[:80]}...")
+        self._log("    → Baixando imagem autenticada...")
+        response = await page.context.request.get(src)
+        if response.status != 200:
+            self._log(f"    ⚠ Download falhou (HTTP {response.status})")
+            return False
+        body = await response.body()
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_bytes(body)
+        destino_convertido = self._converter_foto_celular(destino)
+        self._log(
+            f"    ✓ {destino_convertido.name} salvo em {pasta.name}  "
+            f"({len(body)//1024} KB)"
+        )
+        return True
+
     async def _baixar_primeira_galeria_async(
             self, page, pasta: Path, pos: int = 1, src_anterior=None,
             timeout_ms=60000, destino=None, deletar_baixada=False,
@@ -3488,6 +3734,10 @@ class MotionHubApp(tk.Tk):
             except Exception:
                 pass
 
+            if await self._flow_erro_geracao_visivel_async(page):
+                self._log("    ⚠ Falha de geração detectada; marcando para refazer.")
+                return False
+
             if src_anterior:
                 self._log(
                     "    → Aguardando a imagem gerada substituir a "
@@ -3502,9 +3752,27 @@ class MotionHubApp(tk.Tk):
                 )
             except RuntimeError as e:
                 if src_anterior:
-                    # Timeout esperando mudar: cai para o que tiver, com
-                    # aviso, em vez de travar a edição indefinidamente.
                     self._log(f"    ⚠ {e} Tentando baixar o que estiver visível...")
+                    srcs = await self._obter_srcs_galeria_visiveis_async(page)
+                    preferidos = [s for s in srcs if s and s != src_anterior]
+                    candidatos = preferidos + [
+                        s for s in srcs if s and s == src_anterior
+                    ]
+                    for candidato in candidatos[:8]:
+                        ok = await self._baixar_src_galeria_async(
+                            page, candidato, destino, pasta
+                        )
+                        if ok:
+                            if candidato == src_anterior:
+                                self._log(
+                                    "    ⚠ Baixei a primeira imagem visível, "
+                                    "mas o src era igual ao anterior."
+                                )
+                            if deletar_baixada:
+                                await self._deletar_imagem_baixada_uploads_async(
+                                    page, contexto_delete
+                                )
+                            return True
                     return False
                 else:
                     raise
@@ -3513,23 +3781,9 @@ class MotionHubApp(tk.Tk):
                 self._log(f"    ⚠ Imagem encontrada mas sem atributo src")
                 return False
 
-            self._log(f"    → src: {src[:80]}...")
-
-            if src.startswith("/"):
-                src = "https://labs.google" + src
-
-            self._log(f"    → Baixando imagem autenticada...")
-            response = await page.context.request.get(src)
-
-            if response.status != 200:
-                self._log(f"    ⚠ Download falhou (HTTP {response.status})")
+            ok = await self._baixar_src_galeria_async(page, src, destino, pasta)
+            if not ok:
                 return False
-
-            body = await response.body()
-            destino.parent.mkdir(parents=True, exist_ok=True)
-            destino.write_bytes(body)
-            destino = self._converter_foto_celular(destino)
-            self._log(f"    ✓ {destino.name} salvo em {pasta.name}  ({len(body)//1024} KB)")
             if deletar_baixada:
                 await self._deletar_imagem_baixada_uploads_async(
                     page, contexto_delete
@@ -3546,6 +3800,207 @@ class MotionHubApp(tk.Tk):
     def _sel(self, chave, padrao):
         """Retorna seletor salvo no config (pelo usuário) ou o padrão hardcoded."""
         return self.config.get("seletores", {}).get(chave, padrao)
+
+    def _seletor_erro_geracao_padrao(self):
+        return (
+            "#__next > div.sc-c7ee1759-1.jhwuTJ "
+            "> div.sc-682f0b3f-0.iPxPxr "
+            "> div.sc-e4f4e472-0.iUuqJB "
+            "> div > div > div > div.sc-888a6226-2.iyGxUz "
+            "> div > div > div > div > div > span > div > div > div > span > div"
+        )
+
+    def _seletor_limite_diario_padrao(self):
+        return (
+            "#__next > div.sc-c7ee1759-1.jhwuTJ "
+            "> div.sc-682f0b3f-0.iPxPxr "
+            "> div.sc-e4f4e472-0.iUuqJB "
+            "> div > div > div > div.sc-888a6226-2.iyGxUz "
+            "> div > div > div > div > div > span "
+            "> div > div > div > span > div"
+        )
+
+    def _erro_inicio_palavras_padrao(self):
+        return "Application error\nclient-side exception\nclient side exception"
+
+    def _flow_erro_inicio_palavras(self):
+        texto = str(
+            self.config.get(
+                "flow_erro_inicio_palavras",
+                self._erro_inicio_palavras_padrao()
+            )
+        )
+        palavras = []
+        for linha in texto.replace(";", "\n").replace(",", "\n").splitlines():
+            palavra = linha.strip().lower()
+            if palavra:
+                palavras.append(palavra)
+        return palavras
+
+    async def _flow_erro_inicio_visivel_async(self, page):
+        palavras = self._flow_erro_inicio_palavras()
+        if not palavras:
+            return False
+        try:
+            titulo = (await page.title() or "").strip().lower()
+            if not titulo:
+                return False
+            return any(palavra in titulo for palavra in palavras)
+        except Exception:
+            return False
+
+    async def _flow_recarregar_se_erro_inicio_async(self, page, contexto=""):
+        try:
+            if not await self._flow_erro_inicio_visivel_async(page):
+                return False
+            sufixo = f" ({contexto})" if contexto else ""
+            self._log(f"  ⚠ Erro inicial do Flow detectado{sufixo}; recarregando pagina...")
+            await page.reload(wait_until="domcontentloaded", timeout=30000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=30000)
+            except Exception:
+                pass
+            await asyncio.sleep(1.5)
+            if await self._flow_erro_inicio_visivel_async(page):
+                self._log(f"  ⚠ Erro inicial ainda visivel apos recarregar{sufixo}.")
+            else:
+                self._log(f"  ✓ Pagina recuperada apos recarregar{sufixo}.")
+            return True
+        except Exception as exc:
+            self._log(f"  ⚠ Falha ao verificar/recarregar erro inicial: {exc}")
+            return False
+
+    async def _flow_erro_geracao_visivel_async(self, page):
+        sel = self.config.get("seletores", {}).get(
+            "erro_geracao", self._seletor_erro_geracao_padrao()
+        ).strip()
+        if not sel:
+            return False
+        try:
+            loc = page.locator(sel).first
+            if await loc.count() == 0:
+                return False
+            if not await loc.is_visible(timeout=1000):
+                return False
+            texto = ""
+            try:
+                texto = (await loc.inner_text(timeout=1000) or "").lower()
+            except Exception:
+                pass
+            return (
+                not texto
+                or "falha" in texto
+                or "erro" in texto
+                or "violar" in texto
+                or "violat" in texto
+                or "policy" in texto
+            )
+        except Exception:
+            return False
+
+    async def _flow_limite_diario_visivel_async(self, page):
+        palavras = (
+            "limite", "diario", "diário", "daily", "limit",
+            "quota", "credit", "crédito", "créditos", "gerações",
+            "generations", "mensagens", "messages", "atingiu"
+        )
+
+        def _texto_indica_limite(texto):
+            texto = (texto or "").lower()
+            if not texto:
+                return False
+            return (
+                (("limite" in texto or "atingiu" in texto)
+                 and (
+                     "diario" in texto or "diário" in texto
+                     or "gerações" in texto or "geracoes" in texto
+                     or "mensagens" in texto or "crédito" in texto
+                     or "creditos" in texto or "créditos" in texto
+                 ))
+                or ("daily" in texto and "limit" in texto)
+                or ("quota" in texto and ("limit" in texto or "exceeded" in texto))
+                or ("message" in texto and "limit" in texto)
+                or ("generation" in texto and "limit" in texto)
+                or ("credit" in texto and ("limit" in texto or "daily" in texto))
+            )
+
+        sel = self.config.get("seletores", {}).get(
+            "limite_diario", self._seletor_limite_diario_padrao()
+        ).strip()
+        if sel and not sel.startswith("__IMGSRC__"):
+            try:
+                loc = page.locator(sel).first
+                if await loc.count() and await loc.is_visible(timeout=1000):
+                    texto = ""
+                    try:
+                        texto = await loc.inner_text(timeout=1000) or ""
+                    except Exception:
+                        pass
+                    if _texto_indica_limite(texto):
+                        return True
+            except Exception:
+                pass
+
+        try:
+            resultado = await page.evaluate(
+                """
+                (palavras) => {
+                    const normalizar = (s) => (s || '')
+                        .normalize('NFD')
+                        .replace(/[\\u0300-\\u036f]/g, '')
+                        .toLowerCase();
+                    const visivel = (el) => {
+                        const r = el.getBoundingClientRect();
+                        const st = getComputedStyle(el);
+                        return r.width > 20 && r.height > 10
+                            && st.visibility !== 'hidden'
+                            && st.display !== 'none'
+                            && Number(st.opacity || 1) > 0;
+                    };
+                    const indicaLimite = (txt) => {
+                        const t = normalizar(txt);
+                        return (
+                            ((t.includes('limite') || t.includes('atingiu'))
+                                && (
+                                    t.includes('diario')
+                                    || t.includes('geracoes')
+                                    || t.includes('mensagens')
+                                    || t.includes('credito')
+                                ))
+                            || (t.includes('daily') && t.includes('limit'))
+                            || (t.includes('quota') && (t.includes('limit') || t.includes('exceeded')))
+                            || (t.includes('message') && t.includes('limit'))
+                            || (t.includes('generation') && t.includes('limit'))
+                            || (t.includes('credit') && (t.includes('limit') || t.includes('daily')))
+                        );
+                    };
+                    const candidatos = [...document.querySelectorAll('div, span, p')]
+                        .filter(visivel)
+                        .map((el) => {
+                            const r = el.getBoundingClientRect();
+                            return {
+                                text: (el.innerText || el.textContent || '').trim(),
+                                top: r.top,
+                                left: r.left
+                            };
+                        })
+                        .filter((item) => item.text && item.text.length <= 500)
+                        .sort((a, b) => (a.top - b.top) || (a.left - b.left));
+                    const achado = candidatos.find((item) => indicaLimite(item.text));
+                    return achado ? achado.text : '';
+                }
+                """,
+                list(palavras)
+            )
+            if resultado:
+                self._log(
+                    "    ⚠ Aviso de limite diario detectado por texto: "
+                    + str(resultado).splitlines()[0][:120]
+                )
+                return True
+        except Exception:
+            pass
+        return False
 
     async def _abrir_uploads_flow_async(self, page):
         """
@@ -3964,11 +4419,16 @@ class MotionHubApp(tk.Tk):
 
     async def _selecionar_upload_edicao_async(self, page):
         """
-        Fluxo de edição: clica APENAS na 1ª imagem (a mais recente) segurando Shift.
+        Fluxo de edição: clica APENAS na 1ª imagem (a mais recente).
         """
-        self._log("    → Selecionando 1ª imagem para edição (Shift+clique)...")
+        self._log("    → Selecionando apenas a 1ª imagem para edição...")
 
         await asyncio.sleep(1.0)
+        try:
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.2)
+        except Exception:
+            pass
         rects = await self._obter_uploads_visiveis_por_posicao_async(page)
 
         if not rects:
@@ -3984,8 +4444,10 @@ class MotionHubApp(tk.Tk):
         x, y = rect["cx"], rect["cy"]
         self._log(f"    [debug] Ctrl+clique em ({x:.0f}, {y:.0f})")
         await page.keyboard.down("Control")
-        await page.mouse.click(x, y)
-        await page.keyboard.up("Control")
+        try:
+            await page.mouse.click(x, y)
+        finally:
+            await page.keyboard.up("Control")
         await asyncio.sleep(0.35)
         self._log("    ✓ Imagem selecionada para edição")
 
@@ -4730,9 +5192,65 @@ class MotionHubApp(tk.Tk):
             foto = str(foto_path).lower()
         return f"foto::{foto}::{nome_modelo or ''}"
 
+    def _fotos_erro_registro(
+            self, foto_path, nome_modelo=None, refs=None, motivo=""):
+        foto = Path(foto_path)
+        label = foto.name + (f" [{nome_modelo}]" if nome_modelo else "")
+        return {
+            "nome": label,
+            "foto_origem": foto,
+            "nome_modelo": nome_modelo,
+            "refs": list(refs or []),
+            "motivo": motivo,
+            "review_key": self._foto_review_key(foto, nome_modelo),
+        }
+
+    def _playwright_driver_fechou(self, exc):
+        texto = str(exc or "").lower()
+        sinais = (
+            "connection closed while reading from the driver",
+            "target page, context or browser has been closed",
+            "browser has been closed",
+            "page closed",
+            "context closed",
+            "playwright connection closed",
+        )
+        return any(sinal in texto for sinal in sinais)
+
+    def _fotos_normalizar_erro(self, erro):
+        if isinstance(erro, dict):
+            foto = Path(erro.get("foto_origem") or erro.get("foto_path") or "")
+            nome_modelo = erro.get("nome_modelo")
+            erro.setdefault("foto_origem", foto)
+            erro.setdefault("nome", foto.name + (f" [{nome_modelo}]" if nome_modelo else ""))
+            erro.setdefault("refs", [])
+            erro.setdefault("review_key", self._foto_review_key(foto, nome_modelo))
+            return erro
+        try:
+            nome, foto = erro
+            foto = Path(foto)
+        except Exception:
+            foto = Path(str(erro))
+            nome = foto.name
+        return {
+            "nome": nome,
+            "foto_origem": foto,
+            "nome_modelo": None,
+            "refs": [],
+            "motivo": "",
+            "review_key": self._foto_review_key(foto, None),
+        }
+
     def _fotos_enviar_thread(self):
+        if getattr(self, "_fotos_enviando", False):
+            messagebox.showwarning("Fotos", "Ja existe um envio de fotos em andamento.")
+            return
+        self._fotos_enviando = True
         def _run():
-            asyncio.run(self._fotos_enviar_async())
+            try:
+                asyncio.run(self._fotos_enviar_async())
+            finally:
+                self._fotos_enviando = False
         threading.Thread(target=_run, daemon=True).start()
 
     async def _fotos_enviar_async(self, fotos_override=None):
@@ -4815,7 +5333,6 @@ class MotionHubApp(tk.Tk):
             sends_per_cycle = max(1, int(self.fotos_sends_per_cycle.get()))
         except ValueError:
             sends_per_cycle = 3
-
         fazer_backup = self.fotos_backup_var.get()
 
         # Modelos selecionadas com fotos de referência
@@ -4841,69 +5358,135 @@ class MotionHubApp(tk.Tk):
         else:
             fotos_expandidas = [(foto, None, []) for foto in fotos_sel]
 
-        distribuicoes = []
-        if modelos_sel:
-            # Agrupa por foto: cada foto vai para um único perfil com todos os modelos
-            # fotos_expandidas = [foto1_A, foto1_B, foto1_C, foto2_A, foto2_B, foto2_C, ...]
-            n_modelos = len(modelos_sel)
-            n_fotos = len(fotos_sel)
-            n_perfis = len(perfis)
-            lotes = [[] for _ in perfis]
-            for foto_idx in range(n_fotos):
-                perfil_idx = foto_idx % n_perfis
-                inicio = foto_idx * n_modelos
-                lotes[perfil_idx].extend(fotos_expandidas[inicio:inicio + n_modelos])
-            for perfil, lote in zip(perfis, lotes):
+        def _distribuir_fotos(perfis_disponiveis, itens):
+            distribuicoes_local = []
+            for indice, perfil in enumerate(perfis_disponiveis):
+                lote = itens[indice::len(perfis_disponiveis)]
                 if lote:
-                    distribuicoes.append((perfil, lote))
-        else:
-            for indice, perfil in enumerate(perfis):
-                lote = fotos_expandidas[indice::len(perfis)]
-                if lote:
-                    distribuicoes.append((perfil, lote))
+                    distribuicoes_local.append((perfil, lote))
+            return distribuicoes_local
 
-        capacidade_simultanea = max(1, sends_per_cycle) * max(1, len(distribuicoes))
-        self._log("\U0001f4f8 Iniciando Fotos em multiplos perfis...")
-        self._log(f"   Perfis ativos : {len(perfis_todos)}")
-        self._log(f"   Perfis em uso : {len(distribuicoes)}" + (f" de {limite_perfis}" if limite_perfis else ""))
-        self._log(f"   Abas por perfil: {sends_per_cycle}")
-        self._log(f"   Produção simult.: até {capacidade_simultanea} imagem(ns)")
-        self._log(f"   Fotos totais  : {len(fotos_expandidas)}"
-                  + (f" ({len(fotos_sel)} foto(s) × {len(modelos_sel)} modelo(s))" if modelos_sel else ""))
-        for perfil, lote in distribuicoes:
-            self._log(f"   {perfil['name']} (porta {perfil['port']}): {len(lote)} item(s)")
-
-        try:
-            await self._flow_garantir_perfis_abertos_juntos_async(
-                [perfil for perfil, _ in distribuicoes],
-                cfg_key="fotos_aguardar_abrir",
-                attr="fotos_aguardar_abrir"
+        resultados = []
+        pendentes = list(fotos_expandidas)
+        perfis_com_driver_falho = set()
+        rodada = 0
+        while pendentes:
+            rodada += 1
+            perfis_todos = self._flow_perfis_ativos()
+            perfis_todos = [
+                p for p in perfis_todos
+                if str(p.get("id") or p.get("port")) not in perfis_com_driver_falho
+            ]
+            perfis, limite_perfis = self._limitar_perfis_ativos(
+                perfis_todos,
+                getattr(self, "fotos_max_parallel_profiles", None),
+                padrao=0
             )
-        except Exception as exc:
-            self.after(
-                0, lambda exc=exc: messagebox.showerror("Perfis Flow", str(exc))
-            )
-            return
+            if not perfis:
+                motivo_sem_perfil = (
+                    "Todos os perfis restantes perderam a conexão do driver nesta execução."
+                    if perfis_com_driver_falho
+                    else "Nenhum perfil Flow com creditos disponivel."
+                )
+                for foto, nome_mod, refs in pendentes:
+                    resultados.append({
+                        "perfil": "(sem perfil)",
+                        "erros": [self._fotos_erro_registro(
+                            foto, nome_mod, refs,
+                            motivo_sem_perfil
+                        )],
+                        "fotos_ok": [],
+                        "erro_geral": motivo_sem_perfil,
+                        "limite_diario_fotos": [],
+                    })
+                self._log(
+                    f"  ⚠ {motivo_sem_perfil} Fotos restantes foram para revisão."
+                )
+                break
 
-        resultados = await asyncio.gather(*[
-            self._fotos_enviar_perfil_async(
-                perfil, lote, p_texto,
-                delay_img, cycle_interval, sends_per_cycle, fazer_backup)
-            for perfil, lote in distribuicoes
-        ])
+            distribuicoes = _distribuir_fotos(perfis, pendentes)
+            capacidade_simultanea = max(1, sends_per_cycle) * max(1, len(distribuicoes))
+            if rodada == 1:
+                self._log("\U0001f4f8 Iniciando Fotos em multiplos perfis...")
+                self._log(f"   Perfis ativos : {len(perfis_todos)}")
+                self._log(f"   Abas por perfil: {sends_per_cycle}")
+                self._log(f"   Produção simult.: até {capacidade_simultanea} imagem(ns)")
+                self._log(f"   Fotos totais  : {len(fotos_expandidas)}"
+                          + (f" ({len(fotos_sel)} foto(s) × {len(modelos_sel)} modelo(s))" if modelos_sel else ""))
+            else:
+                self._log(
+                    f"\n🔁 Rodada {rodada}: reenviando {len(pendentes)} foto(s) "
+                    "em perfis com credito..."
+                )
+            self._log(f"   Perfis em uso : {len(distribuicoes)}" + (f" de {limite_perfis}" if limite_perfis else ""))
+            for perfil, lote in distribuicoes:
+                self._log(f"   {perfil['name']} (porta {perfil['port']}): {len(lote)} item(s)")
+
+            try:
+                await self._flow_garantir_perfis_abertos_juntos_async(
+                    [perfil for perfil, _ in distribuicoes],
+                    cfg_key="fotos_aguardar_abrir",
+                    attr="fotos_aguardar_abrir"
+                )
+            except Exception as exc:
+                self.after(
+                    0, lambda exc=exc: messagebox.showerror("Perfis Flow", str(exc))
+                )
+                return
+
+            resultados_rodada = await asyncio.gather(*[
+                self._fotos_enviar_perfil_async(
+                    perfil, lote, p_texto,
+                    delay_img, cycle_interval, sends_per_cycle, fazer_backup)
+                for perfil, lote in distribuicoes
+            ])
+            resultados.extend(resultados_rodada)
+
+            pendentes = []
+            vistos_pendentes = set()
+            for resultado in resultados_rodada:
+                if resultado.get("driver_falhou"):
+                    perfil_key = str(
+                        resultado.get("perfil_id")
+                        or resultado.get("perfil_port")
+                        or resultado.get("perfil")
+                    )
+                    perfis_com_driver_falho.add(perfil_key)
+                    self._log(
+                        f"  ↪ {resultado.get('perfil')}: conexão do driver caiu; "
+                        "perfil pulado no restante desta execução."
+                    )
+                for foto, nome_mod, refs in resultado.get("limite_diario_fotos", []):
+                    chave = self._foto_review_key(foto, nome_mod)
+                    if chave not in vistos_pendentes:
+                        vistos_pendentes.add(chave)
+                        pendentes.append((Path(foto), nome_mod, list(refs or [])))
+                for foto, nome_mod, refs in resultado.get("driver_falha_fotos", []):
+                    chave = self._foto_review_key(foto, nome_mod)
+                    if chave not in vistos_pendentes:
+                        vistos_pendentes.add(chave)
+                        pendentes.append((Path(foto), nome_mod, list(refs or [])))
+            if pendentes:
+                self._log(
+                    f"  ↪ {len(pendentes)} foto(s) voltaram para a fila "
+                    "por limite diario ou queda de driver."
+                )
 
         erros = []
         fotos_geradas = []
         for r in resultados:
-            erros.extend(r.get("erros", []))
+            erros.extend(
+                self._fotos_normalizar_erro(e)
+                for e in r.get("erros", [])
+            )
             fotos_geradas.extend(r.get("fotos_ok", []))
 
         total = len(fotos_expandidas)
-        concluidos = total - len({f for f, _ in erros})
+        concluidos = total - len({e["review_key"] for e in erros})
         msg = f"Concluido!\n{concluidos}/{total} foto(s) gerada(s)."
         if erros:
             msg += "\n\nErros em:\n" + "\n".join(
-                dict.fromkeys(n for n, _ in erros))
+                dict.fromkeys(e["nome"] for e in erros))
         self.after(0, lambda: messagebox.showinfo("Fotos", msg))
         self.after(0, self._fotos_atualizar_lista)
         self._log("\u2500" * 50)
@@ -4941,23 +5524,25 @@ class MotionHubApp(tk.Tk):
             # Adiciona erros à revisão marcados para refazer
             pos_extra = len(fotos_geradas)
             vistos = set()
-            for nome, foto_path in erros:
-                chave = str(foto_path)
+            for erro in erros:
+                chave = erro["review_key"]
                 if chave in vistos:
                     continue
                 vistos.add(chave)
                 pos_extra += 1
-                pasta = foto_path.parent if isinstance(foto_path, Path) else Path(foto_path).parent
+                foto_path = Path(erro["foto_origem"])
                 itens_revisao.append({
-                    "pasta": pasta,
+                    "pasta": foto_path.parent,
                     "arquivo": None,
                     "pos": pos_extra,
                     "erro": True,
                     "origem": "foto",
-                    "foto_origem": Path(foto_path),
-                    "nome_modelo": None,
-                    "refs": [],
-                    "review_key": self._foto_review_key(foto_path, None),
+                    "nome": erro.get("nome"),
+                    "foto_origem": foto_path,
+                    "nome_modelo": erro.get("nome_modelo"),
+                    "refs": list(erro.get("refs") or []),
+                    "review_key": chave,
+                    "motivo": erro.get("motivo", ""),
                 })
             itens_revisao.sort(key=lambda item: item["pos"])
             self.after(0, lambda itens=itens_revisao: self._abrir_revisao(itens))
@@ -4972,7 +5557,26 @@ class MotionHubApp(tk.Tk):
         total_ciclos = (total + sends_per_cycle - 1) // sends_per_cycle
         erros = []
         fotos_ok = []  # fotos substituídas com sucesso
+        limite_diario_fotos = []
+        driver_falha_fotos = []
+        driver_falhou = False
         erro_geral = None
+
+        def _adicionar_driver_falha(itens):
+            vistos = {
+                self._foto_review_key(foto, nome_mod)
+                for foto, nome_mod, _ in driver_falha_fotos
+            }
+            for item in itens:
+                try:
+                    foto, nome_mod, refs = item
+                except Exception:
+                    foto, nome_mod, refs = item, None, []
+                chave = self._foto_review_key(foto, nome_mod)
+                if chave in vistos:
+                    continue
+                vistos.add(chave)
+                driver_falha_fotos.append((Path(foto), nome_mod, list(refs or [])))
 
         self._log(f"{prefixo} Projeto: {projeto_url}")
         self._log(f"{prefixo} Fotos: {total} | Ciclos: {total_ciclos}")
@@ -4997,6 +5601,12 @@ class MotionHubApp(tk.Tk):
                 abas_flow = self._obter_abas_flow_abertas(context, projeto_url)
                 if abas_flow:
                     self._log(f"   Abas Flow reutilizadas: {len(abas_flow)}")
+                    await asyncio.gather(*[
+                        self._flow_recarregar_se_erro_inicio_async(
+                            aba, f"aba reutilizada {i + 1}"
+                        )
+                        for i, aba in enumerate(abas_flow)
+                    ])
 
                 for ciclo_idx in range(total_ciclos):
                     ciclo_num   = ciclo_idx + 1
@@ -5014,7 +5624,10 @@ class MotionHubApp(tk.Tk):
                         nova = await context.new_page()
                         await nova.goto(projeto_url)
                         await nova.wait_for_load_state("networkidle", timeout=30000)
-                        self._log(f"  \u2713 Aba {slot} pronta")
+                        await self._flow_recarregar_se_erro_inicio_async(
+                            nova, f"aba {slot}"
+                        )
+                        self._log(f"  ✓ Aba {slot} pronta")
                         return nova
 
                     while len(abas_flow) < n_abas:
@@ -5027,6 +5640,7 @@ class MotionHubApp(tk.Tk):
                     self._log(f"\n  \U0001f4e4 FASE 1 \u2014 Upload + prompt simultaneo nas {n_abas} aba(s)...")
 
                     async def _preparar_slot_foto(tab_i, item_tuple):
+                        nonlocal driver_falhou
                         foto_path, nome_mod, refs = item_tuple
                         aba = abas_flow[tab_i]
                         label = f"{foto_path.name}" + (f" [{nome_mod}]" if nome_mod else "")
@@ -5035,13 +5649,26 @@ class MotionHubApp(tk.Tk):
                             await self._fotos_preparar_aba_async(aba, str(foto_path), p_texto, fotos_ref=refs)
                             return (aba, foto_path, nome_mod, refs, True)
                         except Exception as e:
+                            if self._playwright_driver_fechou(e):
+                                driver_falhou = True
+                                self._log(
+                                    f"  [Aba {tab_i+1}] ⚠ Driver/Chrome desconectou na preparação: {e}"
+                                )
+                                _adicionar_driver_falha([(foto_path, nome_mod, refs)])
+                                return (aba, foto_path, nome_mod, refs, False)
                             self._log(f"  [Aba {tab_i+1}] \u2717 Erro na preparacao: {e}")
-                            erros.append((foto_path.name, foto_path))
+                            erros.append(self._fotos_erro_registro(
+                                foto_path, nome_mod, refs, str(e)
+                            ))
                             return (aba, foto_path, nome_mod, refs, False)
 
                     abas_info = await asyncio.gather(*[
                         _preparar_slot_foto(i, item) for i, item in enumerate(ciclo_fotos)
                     ])
+                    if driver_falhou:
+                        _adicionar_driver_falha(ciclo_fotos)
+                        _adicionar_driver_falha(fotos[fim:])
+                        break
                     abas_ok = [
                         (aba, foto, nome_mod, refs)
                         for aba, foto, nome_mod, refs, ok in abas_info
@@ -5056,7 +5683,8 @@ class MotionHubApp(tk.Tk):
 
                     srcs_anteriores_fotos = {}
 
-                    async def _enviar_aba_foto(aba, foto, num, total_ok):
+                    async def _enviar_aba_foto(aba, foto, nome_mod, refs, num, total_ok):
+                        nonlocal driver_falhou
                         try:
                             self._log(f"\n  [Aba {num}/{total_ok}] \u2192 {foto.name}")
                             try:
@@ -5071,29 +5699,76 @@ class MotionHubApp(tk.Tk):
                             await self._clicar_criar_flow_async(aba)
                             await self._deletar_ultima_imagem_uploads_flow_async(aba)
                             self._log(f"  [Aba {num}/{total_ok}] \u2713 Criado!")
+                            return True
                         except Exception as e:
+                            if self._playwright_driver_fechou(e):
+                                driver_falhou = True
+                                self._log(
+                                    f"  [Aba {num}/{total_ok}] ⚠ Driver/Chrome desconectou no envio: {e}"
+                                )
+                                _adicionar_driver_falha([(foto, nome_mod, refs)])
+                                return False
                             self._log(f"  [Aba {num}/{total_ok}] \u2717 Erro: {e}")
-                            erros.append((foto.name, foto))
+                            erros.append(self._fotos_erro_registro(
+                                foto, nome_mod, refs, str(e)
+                            ))
+                            return False
 
-                    await asyncio.gather(*[
-                        _enviar_aba_foto(aba, foto, i + 1, len(abas_ok))
+                    envios_ok = await asyncio.gather(*[
+                        _enviar_aba_foto(aba, foto, nome_mod, refs, i + 1, len(abas_ok))
                         for i, (aba, foto, nome_mod, refs) in enumerate(abas_ok)
                     ])
+                    abas_ok = [
+                        info for info, ok in zip(abas_ok, envios_ok) if ok
+                    ]
+                    if driver_falhou:
+                        _adicionar_driver_falha([
+                            (foto, nome_mod, refs)
+                            for _, foto, nome_mod, refs in abas_ok
+                        ])
+                        _adicionar_driver_falha(fotos[fim:])
+                        break
 
                     # FASE 4 download e salvamento em • Pronto
                     if abas_ok:
                         self._log(f"\n  \u23f3 Ciclo {ciclo_num}: aguardando {cycle_interval:.0f}s para gerar...")
                         await asyncio.sleep(cycle_interval)
+                        limite_abas = await asyncio.gather(*[
+                            self._flow_limite_diario_visivel_async(aba)
+                            for aba, _, _, _ in abas_ok
+                        ])
+                        if any(limite_abas):
+                            self._log(
+                                f"  ⚠ {prefixo} atingiu o limite diario de gerações."
+                            )
+                            self._flow_marcar_perfil_sem_creditos(perfil)
+                            pendentes_credito = [
+                                (foto, nome_mod, refs)
+                                for (aba, foto, nome_mod, refs) in abas_ok
+                            ] + list(fotos[fim:])
+                            vistos_credito = set()
+                            for foto, nome_mod, refs in pendentes_credito:
+                                chave = self._foto_review_key(foto, nome_mod)
+                                if chave not in vistos_credito:
+                                    vistos_credito.add(chave)
+                                    limite_diario_fotos.append(
+                                        (Path(foto), nome_mod, list(refs or []))
+                                    )
+                            break
                         self._log(f"\n  \U0001f4e5 Baixando e salvando {len(abas_ok)} foto(s)...")
 
                         async def _baixar_e_salvar_pronto(dl_aba, foto_orig, nome_mod, refs, pos):
+                            nonlocal driver_falhou
                             self._log(f"  [{pos}] \u2193 {foto_orig.name}" + (f" [{nome_mod}]" if nome_mod else ""))
                             try:
                                 foto_saida = await self._fotos_baixar_e_salvar_pronto_async(
                                     dl_aba, foto_orig, pos, False, nome_mod,
                                     src_anterior=srcs_anteriores_fotos.get(foto_orig))
                                 if foto_saida is None:
-                                    erros.append((foto_orig.name, foto_orig))
+                                    erros.append(self._fotos_erro_registro(
+                                        foto_orig, nome_mod, refs,
+                                        "download/geracao falhou"
+                                    ))
                                 else:
                                     fotos_ok.append({
                                         "arquivo": foto_saida,
@@ -5103,24 +5778,84 @@ class MotionHubApp(tk.Tk):
                                         "refs": list(refs or []),
                                     })
                             except Exception as e:
+                                if self._playwright_driver_fechou(e):
+                                    driver_falhou = True
+                                    self._log(
+                                        f"  [{pos}] ⚠ Driver/Chrome desconectou no download: {e}"
+                                    )
+                                    _adicionar_driver_falha([(foto_orig, nome_mod, refs)])
+                                    return
                                 self._log(f"  [{pos}] \u26a0 Falha: {e}")
-                                erros.append((foto_orig.name, foto_orig))
+                                erros.append(self._fotos_erro_registro(
+                                    foto_orig, nome_mod, refs, str(e)
+                                ))
 
                         await asyncio.gather(*[
                             _baixar_e_salvar_pronto(aba, foto, nome_mod, refs, i + 1)
                             for i, (aba, foto, nome_mod, refs) in enumerate(abas_ok)
                         ])
+                        if driver_falhou:
+                            salvas = {
+                                self._foto_review_key(
+                                    item.get("foto_origem"), item.get("nome_modelo")
+                                )
+                                for item in fotos_ok
+                                if isinstance(item, dict)
+                            }
+                            _adicionar_driver_falha([
+                                (foto, nome_mod, refs)
+                                for _, foto, nome_mod, refs in abas_ok
+                                if self._foto_review_key(foto, nome_mod) not in salvas
+                            ])
+                            _adicionar_driver_falha(fotos[fim:])
+                            break
 
         except Exception as e:
             erro_geral = str(e)
             self._log(f"{prefixo} \u2717 Erro geral Playwright: {e}")
-            existentes = {f for _, f in erros}
-            for item in fotos:
-                foto = item[0] if isinstance(item, tuple) else item
-                if foto not in existentes:
-                    erros.append((foto.name, foto))
+            if self._playwright_driver_fechou(e):
+                driver_falhou = True
+                salvas = {
+                    self._foto_review_key(
+                        item.get("foto_origem"), item.get("nome_modelo")
+                    )
+                    for item in fotos_ok
+                    if isinstance(item, dict)
+                }
+                _adicionar_driver_falha([
+                    item for item in fotos
+                    if self._foto_review_key(item[0], item[1])
+                    not in salvas
+                ])
+                erro_geral = None
+            else:
+                existentes = {
+                    self._fotos_normalizar_erro(erro)["review_key"]
+                    for erro in erros
+                }
+                for item in fotos:
+                    if isinstance(item, tuple):
+                        foto, nome_mod, refs = item
+                    else:
+                        foto, nome_mod, refs = item, None, []
+                    chave = self._foto_review_key(foto, nome_mod)
+                    if chave not in existentes:
+                        erros.append(self._fotos_erro_registro(
+                            foto, nome_mod, refs, erro_geral
+                        ))
+                        existentes.add(chave)
 
-        return {"perfil": perfil["name"], "erros": erros, "fotos_ok": fotos_ok, "erro_geral": erro_geral}
+        return {
+            "perfil": perfil["name"],
+            "perfil_id": perfil.get("id"),
+            "perfil_port": perfil.get("port"),
+            "erros": erros,
+            "fotos_ok": fotos_ok,
+            "erro_geral": erro_geral,
+            "limite_diario_fotos": limite_diario_fotos,
+            "driver_falha_fotos": driver_falha_fotos,
+            "driver_falhou": driver_falhou,
+        }
 
     async def _fotos_preparar_aba_async(self, page, foto_path, prompt_texto, fotos_ref=None):
         """
@@ -5189,6 +5924,10 @@ class MotionHubApp(tk.Tk):
             except Exception:
                 pass
 
+            if await self._flow_erro_geracao_visivel_async(page):
+                self._log("    ⚠ Falha de geração detectada; marcando para refazer.")
+                return None
+
             if src_anterior:
                 src = await self._obter_src_primeira_galeria_async(
                     page, timeout_ms=60000, diferente_de=src_anterior
@@ -5237,6 +5976,9 @@ class MotionHubApp(tk.Tk):
             return foto_saida
 
         except Exception as e:
+            if self._playwright_driver_fechou(e):
+                self._log(f"    ⚠ Driver/Chrome desconectou durante download/salvamento: {e}")
+                raise
             self._log(f"    \u26a0 Erro ao baixar/salvar: {e}")
             return None
 
@@ -5312,6 +6054,46 @@ class MotionHubApp(tk.Tk):
             except Exception:
                 pass
         return None
+
+    def _revisao_item_nome(self, item):
+        if item.get("nome"):
+            return str(item["nome"])
+        if item.get("edicao_pendente"):
+            arquivo = item.get("edicao_arquivo") or item.get("arquivo")
+            if arquivo:
+                nome = Path(arquivo).name
+            elif item.get("foto_origem"):
+                nome = Path(item["foto_origem"]).name
+            elif item.get("pasta"):
+                nome = Path(item["pasta"]).name
+            else:
+                nome = "(edicao)"
+            return f"{nome} [edicao]"
+        if item.get("origem") == "foto":
+            if item.get("foto_origem"):
+                nome = Path(item["foto_origem"]).name
+            elif item.get("arquivo"):
+                nome = Path(item["arquivo"]).name
+            else:
+                nome = "(foto)"
+            if item.get("nome_modelo"):
+                nome += f" [{item['nome_modelo']}]"
+            return nome
+        if item.get("pasta_trabalho"):
+            return Path(item["pasta_trabalho"]).name
+        if item.get("pasta"):
+            try:
+                pasta = Path(item["pasta"])
+                if pasta.resolve() == FOTOS_OG_DIR.resolve() and item.get("arquivo"):
+                    return Path(item["arquivo"]).name
+                if pasta.resolve() == FOTOS_OG_DIR.resolve():
+                    return "(foto sem origem)"
+            except Exception:
+                pass
+            return Path(item["pasta"]).name
+        if item.get("arquivo"):
+            return Path(item["arquivo"]).name
+        return "(desconhecido)"
 
     def _abrir_revisao(self, itens):
         """
@@ -5522,21 +6304,30 @@ class MotionHubApp(tk.Tk):
                                           fg=C["FG2"], font=("Segoe UI", 12), compound="center")
 
         # Info
-        nome_display = item["pasta"].name
-        if item.get("regenerado"):
+        nome_display = self._revisao_item_nome(item)
+        if item.get("edicao_pendente"):
+            nome_display = "🟡 " + nome_display
+        elif item.get("regenerado"):
             nome_display = "🔄 " + nome_display
         elif item.get("erro"):
             nome_display = "⚠ " + nome_display
         self._rev_nome_label.configure(text=nome_display)
         if item.get("arquivo"):
             self._rev_arq_label.configure(text=item["arquivo"].name)
+        elif item.get("motivo"):
+            self._rev_arq_label.configure(text=f"(falha ? {item['motivo']})")
         elif frameog_path.exists():
             self._rev_arq_label.configure(text=f"(falha — origem: {frameog_path.name})")
         else:
             self._rev_arq_label.configure(text="(falha — sem arquivo gerado)")
 
         # Indicador de marcado / regenerado
-        if marcado:
+        if item.get("edicao_pendente"):
+            self._rev_marca_label.configure(
+                text="🟡  EDIÇÃO PENDENTE  —  será enviada em Refazer marcadas",
+                fg=C["WARN"])
+            self._rev_img_label.configure(bg="#2a2408")
+        elif marcado:
             self._rev_marca_label.configure(
                 text="🔴  MARCADA PARA REFAZER  —  Enter para desmarcar",
                 fg=C["ERR"])
@@ -5567,9 +6358,8 @@ class MotionHubApp(tk.Tk):
     def _rev_abrir_edicao(self):
         """
         Abre um campo para digitar um prompt de edição.
-        Ao confirmar, envia APENAS a imagem atual da galeria (primeira da
-        galeria de uploads) ao Flow com esse prompt, e depois deleta apenas
-        o primeiro item dos uploads.
+        Ao confirmar, marca a imagem atual para ser enviada ao Flow com um
+        prompt próprio de edição.
         """
         C = self.colors
         idx = self._revisao_idx
@@ -5628,7 +6418,7 @@ class MotionHubApp(tk.Tk):
         Dispara o fluxo de edição em thread separada:
         - Envia apenas a imagem atual (item['arquivo']) ao Flow
         - O flow usa apenas 1 imagem (fluxo de edição, não de swap)
-        - Após envio, seleciona apenas o primeiro upload e o deleta
+        - Usa o prompt próprio da edição, sem misturar com o prompt normal
         """
         if not PLAYWRIGHT_AVAILABLE:
             messagebox.showerror("Erro", "Playwright não está instalado.")
@@ -5650,21 +6440,18 @@ class MotionHubApp(tk.Tk):
         self._log(f"\n✏ Edição: {arquivo.name}")
         self._log(f"   Prompt: {prompt}")
 
-        origem = item.get("origem", "video")
-
-        def _run():
-            try:
-                destino = asyncio.run(
-                    self._rev_enviar_edicao_async(arquivo, prompt, origem=origem)
-                )
-                self.after(
-                    0, lambda: self._rev_finalizar_edicao(item, destino)
-                )
-            except Exception as e:
-                self._log(f"✏ Edição ERRO: {e}")
-                self.after(0, lambda: messagebox.showerror("Edição", str(e)))
-
-        threading.Thread(target=_run, daemon=True).start()
+        item["edicao_pendente"] = True
+        item["edicao_prompt"] = prompt
+        item["edicao_arquivo"] = arquivo
+        item["erro"] = False
+        try:
+            idx = self._revisao_itens.index(item)
+            if idx < len(self._revisao_vars):
+                self._revisao_vars[idx].set(True)
+            self._rev_mostrar(idx)
+        except Exception:
+            pass
+        self._log("   Edição marcada; será enviada em Refazer marcadas.")
 
     def _rev_finalizar_edicao(self, item, destino):
         if not destino:
@@ -5678,8 +6465,14 @@ class MotionHubApp(tk.Tk):
         item["arquivo"] = destino
         item["editado"] = True
         item["editado_em"] = time.time()
+        item.pop("edicao_pendente", None)
+        item.pop("edicao_prompt", None)
+        item.pop("edicao_arquivo", None)
+        item["erro"] = False
         self._revisao_itens.sort(key=self._revisao_sort_key)
         self._revisao_idx = self._revisao_itens.index(item)
+        if self._revisao_idx < len(self._revisao_vars):
+            self._revisao_vars[self._revisao_idx].set(False)
         try:
             self._rev_mostrar(self._revisao_idx)
         except Exception:
@@ -5694,33 +6487,14 @@ class MotionHubApp(tk.Tk):
         """
         Fluxo de edição de uma única imagem na aba Revisão (tecla E).
 
-        Sequência correta — imagem ANTES do prompt:
-        1. Envia 'arquivo' para a galeria Uploads
-        2. Aguarda 15 s para a imagem carregar
-        3. Abre Uploads e seleciona a imagem via Shift+mouse.click nas coords reais
-        4. Cola o prompt no editor de texto (seleção mantida)
-        5. Clica em Enviar
-        6. Abre Uploads, seleciona + Delete
-        7. Volta para "Todas as mídias"
-        8. Baixa a imagem gerada
+        Sequência correta:
+        1. Reutiliza uma aba existente do Flow no perfil escolhido
+        2. Envia 'arquivo'
+        3. Limpa o editor e cola o prompt próprio de edição
+        4. Clica em Enviar
+        5. Baixa a imagem gerada
         """
         # ── Seletores ─────────────────────────────────────────────────────────
-        UPLOAD_LINK_SEL = (
-            "#__next > div.sc-c7ee1759-1.jhwuTJ "
-            "> div.sc-682f0b3f-0.iPxPxr "
-            "> div.sc-e4f4e472-0.iUuqJB "
-            "> div > div > div > div.sc-888a6226-2.iyGxUz "
-            "> div > div > div > div > div > span "
-            "> div > div > div > div > span > div > a"
-        )
-        UPLOAD_IMG_SEL = (
-            "#__next > div.sc-c7ee1759-1.jhwuTJ "
-            "> div.sc-682f0b3f-0.iPxPxr "
-            "> div.sc-e4f4e472-0.iUuqJB "
-            "> div > div > div > div.sc-888a6226-2.iyGxUz "
-            "> div > div > div > div > div > span "
-            "> div > div > div > div > span > div > a > img"
-        )
         ENVIAR_BTN_SEL = (
             "#__next > div.sc-c7ee1759-1.jhwuTJ "
             "> div.sc-682f0b3f-1.cLCWIL "
@@ -5730,40 +6504,6 @@ class MotionHubApp(tk.Tk):
             "> button.sc-e8425ea6-0.hOBPaw.sc-d3791a4f-0.sc-d3791a4f-4"
             ".sc-26b30722-5.ewGlDn.famhRe.jDvIwb"
         )
-        UPLOADS_BTN_SEL = FLOW_UPLOADS_BTN_SEL
-        TODAS_MIDIAS_SEL = (
-            "#__next > div.sc-c7ee1759-1.jhwuTJ "
-            "> div.sc-682f0b3f-0.iPxPxr "
-            "> div.sc-265fb5e0-1.kSJyDR "
-            "> div.sc-3ce961f7-1.gAnqsv"
-        )
-
-        async def _selecionar_primeira_imagem_uploads(page):
-            """
-            Seleciona a 1ª imagem nos Uploads pelo método visual/posição de tela.
-            Não usa seletor legado nem Ctrl+A.
-            """
-            await self._abrir_uploads_flow_async(page)
-    
-            rects = []
-            limite = time.monotonic() + 12
-            while time.monotonic() < limite:
-                rects = await self._obter_uploads_visiveis_por_posicao_async(page)
-                if rects:
-                    break
-                await asyncio.sleep(0.35)
-
-            if not rects:
-                self._log("   ⚠ Nenhuma imagem visível nos Uploads")
-                return False
-
-            item = rects[0]
-            await page.keyboard.down("Control")
-            await page.mouse.click(float(item["cx"]), float(item["cy"]))
-            await page.keyboard.up("Control")
-            await asyncio.sleep(0.3)
-            self._log(f"   ✓ 1ª imagem selecionada visualmente ({len(rects)} item(ns) visível(is))")
-            return True
 
         # ── Conectar ──────────────────────────────────────────────────────────
         perfis = self._flow_profiles_obter()
@@ -5789,41 +6529,47 @@ class MotionHubApp(tk.Tk):
                     f"Não foi possível conectar ao Chrome na porta {porta}: {e}")
 
             ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
-            page = None
-            for p in ctx.pages:
-                if "labs.google" in p.url or "flow" in p.url.lower():
-                    page = p
-                    break
-            if page is None:
-                page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-            self._log(f"   → Aba: {page.url[:60]}...")
+            projeto_url = perfil.get("url") or FLOW_URL
+            abas_flow = self._obter_abas_flow_abertas(ctx, projeto_url)
+            if abas_flow:
+                page = abas_flow[0]
+                self._log(f"   → Reutilizando aba Flow existente: {page.url[:60]}...")
+            else:
+                paginas = [p for p in ctx.pages if not p.is_closed()]
+                if paginas:
+                    page = paginas[-1]
+                    self._log("   → Reutilizando aba existente do perfil para edição...")
+                else:
+                    raise RuntimeError(
+                        "Nenhuma aba existente no perfil Flow para reutilizar. "
+                        "Abra uma aba do Flow nesse perfil e tente novamente."
+                    )
+                await page.goto(projeto_url)
+                await page.wait_for_load_state("domcontentloaded", timeout=30000)
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=30000)
+                except Exception:
+                    pass
+            await self._flow_recarregar_se_erro_inicio_async(
+                page, "revisao"
+            )
 
             # ── FASE 1: Upload ────────────────────────────────────────────────
-            self._log(f"   → [1] Enviando {arquivo.name} para Uploads...")
+            self._log(f"   → [1] Enviando {arquivo.name}...")
             await self._upload_arquivo_para_galeria_async(page, str(arquivo))
             self._log("   ✓ Upload concluído")
 
-            # ── FASE 2: Aguarda galeria carregar ──────────────────────────────
-            self._log("   ⏳ [2] Aguardando 15 s para a imagem carregar na galeria...")
-            await asyncio.sleep(15)
-
-            # ── FASE 3: Seleciona a imagem no Uploads ─────────────────────────
-            # DEVE ser feito ANTES de colar o prompt para que o Flow associe
-            # a imagem ao prompt corretamente.
-            self._log("   → [3] Abrindo Uploads e selecionando a imagem...")
-            try:
-                await _selecionar_primeira_imagem_uploads(page)
-            except Exception as e:
-                self._log(f"   ⚠ Seleção FASE 3 falhou: {e}")
-
-            # ── FASE 4: Cola o prompt SEM clicar fora (mantém seleção) ────────
-            self._log("   → [4] Inserindo prompt de edição...")
+            # ── FASE 2: Cola o prompt próprio da edição ───────────────────────
+            self._log("   → [2] Inserindo prompt de edição...")
             CAMPO = '[data-slate-editor="true"]'
             try:
                 await page.wait_for_selector(CAMPO, timeout=10000)
                 campo = page.locator(CAMPO).first
                 await campo.click()
-                await asyncio.sleep(0.4)
+                await asyncio.sleep(0.2)
+                await page.keyboard.press("Control+A")
+                await page.keyboard.press("Backspace")
+                await asyncio.sleep(0.2)
                 await self._colar_prompt_async(page, prompt)
                 await asyncio.sleep(0.3)
                 self._log("   ✓ Prompt inserido")
@@ -5839,8 +6585,8 @@ class MotionHubApp(tk.Tk):
             except Exception:
                 pass
 
-            # ── FASE 5: Clica em Enviar ───────────────────────────────────────
-            self._log("   → [5] Clicando em Enviar...")
+            # ── FASE 3: Clica em Enviar ───────────────────────────────────────
+            self._log("   → [3] Clicando em Enviar...")
             enviado = False
             try:
                 btn_enviar = page.locator(ENVIAR_BTN_SEL).first
@@ -5861,27 +6607,7 @@ class MotionHubApp(tk.Tk):
             if not enviado:
                 raise RuntimeError("Não foi possível clicar em Enviar.")
 
-            # ── FASE 6: Delete — imagem já fica selecionada após o envio ─────
-            self._log("   → [6] Deletando imagem enviada (já selecionada)...")
-            try:
-                await page.keyboard.press("Delete")
-                await asyncio.sleep(0.5)
-                self._log("   ✓ Imagem deletada dos Uploads")
-            except Exception as e:
-                self._log(f"   ⚠ Não foi possível deletar o upload: {e}")
-
-            # ── FASE 7: Volta para "Todas as mídias" ──────────────────────────
-            self._log("   → [7] Voltando para a galeria de todas as mídias...")
-            try:
-                btn_todas = page.locator(TODAS_MIDIAS_SEL).first
-                await btn_todas.wait_for(state="visible", timeout=8000)
-                await btn_todas.click()
-                await asyncio.sleep(0.8)
-                self._log("   ✓ Galeria de todas as mídias aberta")
-            except Exception as e:
-                self._log(f"   ~ Não foi possível clicar em 'Todas as mídias': {e}")
-
-            # ── FASE 8: Baixa a imagem gerada ────────────────────────────────
+            # ── FASE 4: Baixa a imagem gerada ────────────────────────────────
             try:
                 send_interval = float(self.opt_send_interval.get())
             except Exception:
@@ -5889,14 +6615,14 @@ class MotionHubApp(tk.Tk):
             self._log(f"   ⏳ Aguardando {send_interval:g}s antes de baixar...")
             await asyncio.sleep(send_interval)
 
-            self._log("   → [8] Baixando imagem gerada...")
+            self._log("   → [4] Baixando imagem gerada...")
             try:
                 pasta_destino = arquivo.parent
                 ok_baixou = await self._baixar_primeira_galeria_async(
                     page, pasta_destino, src_anterior=src_anterior,
                     destino=arquivo,
                     deletar_baixada=True,
-                    contexto_delete=f"revisao {origem}"
+                    contexto_delete=f"imagem editada da revisao/{origem}"
                 )
                 if ok_baixou:
                     self._log("   ✓ Imagem baixada com sucesso")
@@ -5925,10 +6651,7 @@ class MotionHubApp(tk.Tk):
         if not marcadas:
             messagebox.showinfo("Revisão", "Nenhuma imagem marcada para deletar.")
             return
-        nomes = "\n".join(
-            f"• {it['pasta'].name}" if it.get("pasta") else "• (pasta desconhecida)"
-            for it in marcadas
-        )
+        nomes = "\n".join(f"• {self._revisao_item_nome(it)}" for it in marcadas)
         if not messagebox.askyesno("Confirmar exclusão",
                 f"Remover {len(marcadas)} item(ns) da revisao?\n\n{nomes}\n\n"
                 "As pastas de trabalho serao preservadas."):
@@ -5980,11 +6703,20 @@ class MotionHubApp(tk.Tk):
         # Apaga os frameNew marcados e dispara o reprocessamento
         pastas_refazer = []
         fotos_refazer = []
+        edicoes_refazer = []
         ignorados = []
         pastas_vistas = set()
         fotos_vistas = set()
         for item in marcadas:
-            pasta_nome = item["pasta"].name if item.get("pasta") else "(desconhecida)"
+            pasta_nome = self._revisao_item_nome(item)
+            if item.get("edicao_pendente"):
+                arquivo = Path(item.get("edicao_arquivo") or item.get("arquivo", ""))
+                prompt = item.get("edicao_prompt", "").strip()
+                if arquivo.exists() and prompt:
+                    edicoes_refazer.append((item, arquivo, prompt, item.get("origem", "video")))
+                else:
+                    ignorados.append(f"{pasta_nome} (edicao pendente sem arquivo/prompt)")
+                continue
             if item.get("arquivo"):
                 try:
                     if item["arquivo"].exists():
@@ -6036,7 +6768,7 @@ class MotionHubApp(tk.Tk):
             )
             return
 
-        if not pastas_refazer and not fotos_refazer:
+        if not pastas_refazer and not fotos_refazer and not edicoes_refazer:
             messagebox.showwarning(
                 "Revisao",
                 "Nenhum item marcado pode ser refeito com os dados atuais."
@@ -6051,13 +6783,23 @@ class MotionHubApp(tk.Tk):
             )
             return
 
-        # Reutiliza a lógica de envio Flow com as pastas marcadas
-        if pastas_refazer:
-            self._log(f"\n🔁 Refazendo {len(pastas_refazer)} pasta(s)...")
-            self._iniciar_flow_com_pastas(pastas_refazer)
-        if fotos_refazer:
-            self._log(f"\nRefazendo {len(fotos_refazer)} foto(s)...")
-            self._iniciar_fotos_com_itens(fotos_refazer)
+        def _iniciar_refazer_normal():
+            if pastas_refazer:
+                self._log(f"\n🔁 Refazendo {len(pastas_refazer)} pasta(s)...")
+                self._iniciar_flow_com_pastas(pastas_refazer)
+            if fotos_refazer:
+                self._log(f"\nRefazendo {len(fotos_refazer)} foto(s)...")
+                self._iniciar_fotos_com_itens(fotos_refazer)
+
+        if edicoes_refazer:
+            self._log(f"\nRefazendo {len(edicoes_refazer)} edição(ões) pendente(s)...")
+            self._iniciar_edicoes_revisao(
+                edicoes_refazer,
+                ao_finalizar=_iniciar_refazer_normal
+                if (pastas_refazer or fotos_refazer) else None
+            )
+        else:
+            _iniciar_refazer_normal()
 
     def _iniciar_flow_com_pastas(self, pastas):
         """Dispara o envio Flow para uma lista específica de pastas (reprocessamento)."""
@@ -6093,6 +6835,32 @@ class MotionHubApp(tk.Tk):
                         f"Falha ao iniciar o reprocessamento:\n\n{exc}"
                     )
                 )
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _iniciar_edicoes_revisao(self, edicoes, ao_finalizar=None):
+        """Dispara edicoes pendentes marcadas na Revisao."""
+        def _run():
+            for item, arquivo, prompt, origem in edicoes:
+                try:
+                    destino = asyncio.run(
+                        self._rev_enviar_edicao_async(
+                            Path(arquivo), prompt, origem=origem
+                        )
+                    )
+                    self.after(
+                        0, lambda item=item, destino=destino:
+                        self._rev_finalizar_edicao(item, destino)
+                    )
+                except Exception as exc:
+                    self._log(f"Edição pendente ERRO: {exc}")
+                    item["erro"] = True
+                    self.after(
+                        0, lambda exc=exc: messagebox.showerror(
+                            "Edição", str(exc)
+                        )
+                    )
+            if ao_finalizar:
+                self.after(0, ao_finalizar)
         threading.Thread(target=_run, daemon=True).start()
 
     # =========================================================================
@@ -6224,6 +6992,12 @@ class MotionHubApp(tk.Tk):
         self._video_play_btn = None
         for widget in self._video_frame.winfo_children():
             widget.destroy()
+        try:
+            altura = max(620, self.winfo_height() - 120)
+            self._video_frame.configure(height=altura)
+            self._video_frame.pack_propagate(False)
+        except Exception:
+            pass
 
         header = tk.Frame(self._video_frame, bg=C["BG"])
         header.pack(fill="x", padx=16, pady=(12, 6))
@@ -10117,6 +10891,27 @@ class MotionHubApp(tk.Tk):
             padrao="",
         )
 
+        self._sel_bloco_erro_geracao = self._build_seletor_bloco(
+            frame,
+            chave="erro_geracao",
+            label="Cartão de erro/falha de geração",
+            padrao=self._seletor_erro_geracao_padrao(),
+        )
+
+        self._sel_bloco_limite_diario = self._build_seletor_bloco(
+            frame,
+            chave="limite_diario",
+            label="Cartão de limite diário de gerações",
+            padrao=self._seletor_limite_diario_padrao(),
+        )
+
+        self._erro_inicio_palavras_bloco = self._build_texto_config_bloco(
+            frame,
+            chave="flow_erro_inicio_palavras",
+            label="Palavras-chave no título da guia para recarregar o Flow",
+            padrao=self._erro_inicio_palavras_padrao(),
+        )
+
         # ── Bloco: 3 imagens em sequência ────────────────────────────────────
         bloco_imgs = tk.Frame(frame, bg=C["BG2"])
         bloco_imgs.pack(fill="x", padx=16, pady=(0, 10), ipady=8, ipadx=8)
@@ -10229,6 +11024,78 @@ class MotionHubApp(tk.Tk):
 
         return bloco
 
+    def _build_texto_config_bloco(self, parent, chave, label, padrao):
+        """Cria um bloco simples para texto livre salvo diretamente na config."""
+        C = self.colors
+        bloco = tk.Frame(parent, bg=C["BG2"])
+        bloco.pack(fill="x", padx=16, pady=(0, 10), ipady=8, ipadx=8)
+
+        tk.Label(bloco, text=label, bg=C["BG2"], fg=C["ACCFG"],
+                 font=("Segoe UI Semibold", 9)).pack(anchor="w", padx=8, pady=(6, 2))
+
+        entry_frame = tk.Frame(bloco, bg=C["BG2"])
+        entry_frame.pack(fill="x", padx=8, pady=(0, 4))
+
+        entry = tk.Text(entry_frame, height=3, bg=C["BG3"], fg=C["FG"],
+                        font=("Consolas", 8), relief="flat", wrap="char",
+                        insertbackground=C["ACC"])
+        entry.insert("1.0", self.config.get(chave, padrao))
+        entry.pack(side="left", fill="x", expand=True)
+
+        valor_atual = self.config.get(chave)
+        status_txt = "✓ configurado" if valor_atual else "· padrão"
+        status_cor = C["ACCFG"] if valor_atual else C["FG2"]
+        status_lbl = tk.Label(entry_frame, text=status_txt, bg=C["BG2"],
+                              fg=status_cor, font=("Segoe UI", 8), width=12)
+        status_lbl.pack(side="left", padx=(6, 0))
+
+        if not hasattr(self, "_config_texto_vars"):
+            self._config_texto_vars = {}
+            self._config_texto_status = {}
+        self._config_texto_vars[chave] = entry
+        self._config_texto_status[chave] = status_lbl
+
+        btn_frame = tk.Frame(bloco, bg=C["BG2"])
+        btn_frame.pack(fill="x", padx=8, pady=(0, 4))
+
+        ttk.Button(
+            btn_frame, text="Salvar texto",
+            command=lambda c=chave: self._config_texto_salvar(c)
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            btn_frame, text="Resetar",
+            command=lambda c=chave, p=padrao: self._config_texto_resetar(c, p)
+        ).pack(side="left")
+
+        tk.Label(
+            bloco,
+            text="Uma palavra/frase por linha. Também aceita vírgula ou ponto-e-vírgula.",
+            bg=C["BG2"], fg=C["FG2"], font=("Segoe UI", 8),
+            anchor="w", justify="left"
+        ).pack(fill="x", padx=8, pady=(0, 4))
+
+        return bloco
+
+    def _config_texto_salvar(self, chave):
+        entry = self._config_texto_vars[chave]
+        valor = entry.get("1.0", "end").strip()
+        if not valor:
+            messagebox.showwarning("Configuração", "O texto não pode ser vazio.")
+            return
+        self.config[chave] = valor
+        save_json(CONFIG_FILE, self.config)
+        self._config_texto_status[chave].configure(text="✓ configurado", fg=self.colors["ACCFG"])
+        self._log(f"Configuração '{chave}' salva.")
+
+    def _config_texto_resetar(self, chave, padrao):
+        self.config.pop(chave, None)
+        save_json(CONFIG_FILE, self.config)
+        entry = self._config_texto_vars[chave]
+        entry.delete("1.0", "end")
+        entry.insert("1.0", padrao)
+        self._config_texto_status[chave].configure(text="· padrão", fg=self.colors["FG2"])
+        self._log(f"Configuração '{chave}' resetada.")
+
     def _seletores_salvar_texto(self, chave):
         entry = self._seletores_vars[chave]
         valor = entry.get("1.0", "end").strip()
@@ -10294,9 +11161,6 @@ class MotionHubApp(tk.Tk):
             return
 
         self._seletores_status[chave].configure(text="⦿ aguardando...", fg=self.colors["WARN"])
-        messagebox.showinfo("Capturar seletor",
-            "Clique no elemento correto no Chrome agora.\n"
-            f"(porta {porta})")
 
         def _thread():
             resultado = self._seletores_run_captura(porta, 1)
@@ -10311,15 +11175,6 @@ class MotionHubApp(tk.Tk):
         porta = self._seletores_porta_ativa()
         if not porta:
             return
-
-        messagebox.showinfo(
-            "Capturar 3 imagens",
-            "Você vai clicar nas imagens em sequência:\n\n"
-            "  1º clique → 3ª imagem\n"
-            "  2º clique → 2ª imagem\n"
-            "  3º clique → 1ª imagem\n\n"
-            "Clique OK e vá para o Chrome."
-        )
 
         self._sel_imgs_status.configure(text="⦿ aguardando 3ª imagem...", fg=self.colors["WARN"])
 
