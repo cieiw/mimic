@@ -18,9 +18,7 @@
       "port": "9222",
       "url": "https://labs.google/fx/pt/tools/flow/project/8d879eae-565f-4123-b604-1d963adf79c9",
       "session": "C:\\Temp\\chrome_motionhub",
-      "active": false,
-      "credit_blocked_until": 1782855668.099351,
-      "credit_blocked_reason": "limite_diario"
+      "active": true
     },
     {
       "id": "perfil_2",
