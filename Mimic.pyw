@@ -777,6 +777,7 @@ class MotionHubApp(tk.Tk):
 
         self._build_ui()
         self._restore_state()
+        self.after(100, self._iniciar_tela_cheia)
         self.after(60000, self._flow_agendar_refresh_creditos)
 
     def _on_configure(self, event):
@@ -796,6 +797,15 @@ class MotionHubApp(tk.Tk):
             self.notebook.select(self.config.get("last_tab", 0))
         except Exception:
             pass
+
+    def _iniciar_tela_cheia(self):
+        try:
+            self.state("zoomed")
+        except Exception:
+            try:
+                self.attributes("-zoomed", True)
+            except Exception:
+                pass
 
     def _aplicar_icone_app(self):
         """Aplica a logo do Mimic na janela."""

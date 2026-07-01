@@ -1,7 +1,7 @@
 {
-  "window_geometry": "1920x1009+-769+324",
+  "window_geometry": "1920x1009+-223+234",
   "window_state": "normal",
-  "last_tab": 4,
+  "last_tab": 0,
   "auto_modelo": "#1Aurora",
   "flow_modelo": "exemplo2",
   "flow_prompt_ativo": "Padrão",
@@ -228,7 +228,7 @@
   "fotos_delay": "20",
   "fotos_cycle_interval": "40",
   "motion_creditos_last_opened_ts": 1782538622.6487005,
-  "fotos_max_parallel_profiles": "3",
+  "fotos_max_parallel_profiles": "4",
   "flow_max_parallel_profiles": "2",
   "seletores": {
     "uploads_btn": "__IMGSRC__https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name=3515ad84-3fbf-4a3c-9a81-e4d920801317",
